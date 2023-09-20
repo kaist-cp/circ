@@ -1,0 +1,24 @@
+[package]
+name = "circ"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+crossbeam = { git = "https://github.com/powergee/crossbeam.git", branch = "kaist-no-nested" }
+membarrier = { git = "https://github.com/jeehoonkang/membarrier-rs.git", branch = "smr-benchmark" }
+scopeguard = "1.1.0"
+static_assertions = "1.1.0"
+atomic = "0.5"
+cfg-if = "1.0"
+rustc-hash = "1.1.0"
+
+[dev-dependencies]
+rand = "0.8"
+crossbeam-utils = "0.8"
+bitflags = "2.4.0"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
