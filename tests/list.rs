@@ -152,7 +152,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
     ) -> Result<(), Rc<Node<K, V, C>, C>> {
         unsafe { node.deref() }
             .next
-            .swap(Rc::from_snapshot(&self.curr, cs), Ordering::Relaxed, cs);
+            .swap(Rc::from_snapshot(&self.curr), Ordering::Relaxed, cs);
 
         match unsafe { self.prev.deref() }.next.compare_exchange(
             self.curr.as_ptr(),
@@ -207,7 +207,7 @@ where
     /// Creates a new list.
     pub fn new() -> Self {
         List {
-            head: AtomicRc::new(Node::head(), &C::new()),
+            head: AtomicRc::new(Node::head()),
         }
     }
 
@@ -229,7 +229,7 @@ where
     where
         F: Fn(&mut Cursor<K, V, C>, &K, &C) -> Result<bool, ()>,
     {
-        let mut node = Rc::new(Node::new(key, value), cs);
+        let mut node = Rc::new(Node::new(key, value));
         loop {
             let found = self.get(&unsafe { node.deref() }.key, &find, cursor, cs);
             if found {

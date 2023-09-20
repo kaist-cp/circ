@@ -2,7 +2,7 @@ use std::{mem::swap, ptr::null};
 
 use atomic::Ordering;
 
-use crate::{Acquired, Counted, Cs, TaggedCnt};
+use crate::{Acquired, Cs, RcInner, TaggedCnt};
 
 use super::hp_impl::{HazardPointer, Thread, DEFAULT_THREAD};
 
@@ -67,19 +67,19 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    unsafe fn without_epoch() -> Self {
-        Self::new()
-    }
-
-    #[inline]
     unsafe fn unprotected() -> Self {
         Self { thread: null() }
     }
 
     #[inline]
-    fn create_object<T>(&self, obj: T) -> *mut crate::Counted<T> {
-        let obj = Counted::new(obj);
+    fn create_object<T>(obj: T) -> *mut crate::RcInner<T> {
+        let obj = RcInner::new(obj);
         Box::into_raw(Box::new(obj))
+    }
+
+    #[inline]
+    fn delete_object<T>(ptr: *mut RcInner<T>) {
+        drop(unsafe { Box::from_raw(ptr) });
     }
 
     #[inline]
@@ -90,11 +90,11 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    fn protect_snapshot<T>(
+    fn protect_from_strong<T>(
         &self,
         link: &atomic::Atomic<TaggedCnt<T>>,
         shield: &mut Self::RawShield<T>,
-    ) -> bool {
+    ) {
         let mut ptr = link.load(Ordering::Relaxed);
         loop {
             shield.ptr = ptr;
@@ -107,31 +107,19 @@ impl Cs for CsHP {
             }
             ptr = new_ptr;
         }
-
-        if !ptr.is_null() && unsafe { ptr.deref() }.ref_count() == 0 {
-            shield.clear();
-            false
-        } else {
-            true
-        }
     }
 
     #[inline]
-    unsafe fn delete_object<T>(&self, ptr: *mut Counted<T>) {
-        drop(Box::from_raw(ptr));
-    }
-
-    #[inline]
-    unsafe fn retire<T>(&self, ptr: *mut Counted<T>, ret_type: crate::RetireType) {
+    unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
+    where
+        F: FnOnce(&mut RcInner<T>),
+    {
         debug_assert!(!ptr.is_null());
         let cnt = &mut *ptr;
         if let Some(thread) = self.thread.as_ref() {
-            thread.defer(ptr, move || {
-                let inner_guard = Self::new();
-                inner_guard.eject(cnt, ret_type);
-            });
+            thread.defer(ptr, move || f(cnt));
         } else {
-            self.eject(cnt, ret_type);
+            f(cnt);
         }
     }
 

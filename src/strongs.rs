@@ -35,9 +35,9 @@ const_assert!(mem::size_of::<Atomic<TaggedCnt<u8>>>() == mem::size_of::<AtomicUs
 
 impl<T, C: Cs> AtomicRc<T, C> {
     #[inline(always)]
-    pub fn new(obj: T, cs: &C) -> Self {
+    pub fn new(obj: T) -> Self {
         Self {
-            link: Atomic::new(Rc::new(obj, cs).into_raw()),
+            link: Atomic::new(Rc::<T, C>::new(obj).into_raw()),
             _marker: PhantomData,
         }
     }
@@ -67,7 +67,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                cs.delayed_decrement_ref_cnt(cnt);
+                cnt.decrement_strong(Some(cs));
             }
         }
     }
@@ -193,8 +193,8 @@ impl<T, C: Cs> Drop for AtomicRc<T, C> {
         let ptr = self.link.load(Ordering::Relaxed);
         unsafe {
             if let Some(cnt) = ptr.as_raw().as_mut() {
-                let cs = C::new();
-                cs.delayed_decrement_ref_cnt(cnt);
+                let cs = &C::new();
+                cnt.decrement_strong(Some(cs));
             }
         }
     }
@@ -243,7 +243,7 @@ impl<T, C: Cs> Rc<T, C> {
     }
 
     #[inline(always)]
-    pub fn from_snapshot<'g>(ptr: &Snapshot<T, C>, cs: &'g C) -> Self {
+    pub fn from_snapshot<'g>(ptr: &Snapshot<T, C>) -> Self {
         let rc = Self {
             ptr: ptr.as_ptr(),
             must_delay: false,
@@ -251,15 +251,15 @@ impl<T, C: Cs> Rc<T, C> {
         };
         unsafe {
             if let Some(cnt) = rc.ptr.as_raw().as_ref() {
-                cs.increment_ref_cnt(cnt);
+                cnt.increment_strong();
             }
         }
         rc
     }
 
     #[inline(always)]
-    pub fn new(obj: T, cs: &C) -> Self {
-        let ptr = cs.create_object(obj);
+    pub fn new(obj: T) -> Self {
+        let ptr = C::create_object(obj);
         Self {
             ptr: TaggedCnt::new(ptr),
             must_delay: false,
@@ -268,7 +268,7 @@ impl<T, C: Cs> Rc<T, C> {
     }
 
     #[inline(always)]
-    pub fn clone(&self, cs: &C) -> Self {
+    pub fn clone(&self) -> Self {
         let rc = Self {
             ptr: self.ptr,
             must_delay: self.must_delay,
@@ -276,20 +276,10 @@ impl<T, C: Cs> Rc<T, C> {
         };
         unsafe {
             if let Some(cnt) = rc.ptr.as_raw().as_ref() {
-                cs.increment_ref_cnt(cnt);
+                cnt.increment_strong();
             }
         }
         rc
-    }
-
-    #[inline(always)]
-    pub fn ref_count(&self) -> u32 {
-        unsafe { self.ptr.deref().ref_count() }
-    }
-
-    #[inline(always)]
-    pub fn weak_count(&self) -> u32 {
-        unsafe { self.ptr.deref().weak_count() }
     }
 
     #[inline(always)]
@@ -310,19 +300,6 @@ impl<T, C: Cs> Rc<T, C> {
         forget(self);
         new_ptr
     }
-
-    #[inline]
-    pub fn finalize(self, cs: &C) {
-        unsafe {
-            if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                if self.must_delay {
-                    cs.delayed_decrement_ref_cnt(cnt);
-                } else {
-                    cs.decrement_ref_cnt(cnt);
-                }
-            }
-        }
-    }
 }
 
 impl<T, C: Cs> Default for Rc<T, C> {
@@ -337,13 +314,12 @@ impl<T, C: Cs> Drop for Rc<T, C> {
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                if self.must_delay {
-                    let cs = C::new();
-                    cs.delayed_decrement_ref_cnt(cnt);
+                let cs = if self.must_delay {
+                    C::new()
                 } else {
-                    let cs = C::without_epoch();
-                    cs.decrement_ref_cnt(cnt);
-                }
+                    C::unprotected()
+                };
+                cnt.decrement_strong(Some(&cs))
             }
         }
     }
@@ -371,11 +347,7 @@ impl<T, C: Cs> Snapshot<T, C> {
 
     #[inline]
     pub fn load(&mut self, from: &AtomicRc<T, C>, cs: &C) {
-        let ok = cs.protect_snapshot(&from.link, &mut self.acquired);
-        debug_assert!(
-            ok,
-            "The reference count cannot be 0, when we are loading from `AtomicRc`"
-        );
+        cs.protect_from_strong(&from.link, &mut self.acquired);
     }
 
     #[inline]
@@ -485,7 +457,7 @@ pub trait StrongPtr<T, C: Cs>: Pointer<T> {
             // prevent calling a destructor which decrements it.
             forget(self);
         } else if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            cnt.add_ref();
+            cnt.increment_strong();
         }
     }
 
@@ -501,7 +473,7 @@ pub trait StrongPtr<T, C: Cs>: Pointer<T> {
         if Self::OWNS_REF_COUNT {
             self.into_ref_count();
         } else if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            cnt.add_ref();
+            cnt.increment_strong();
         }
         rc
     }

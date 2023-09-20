@@ -2,8 +2,8 @@ use std::mem;
 
 use atomic::Ordering;
 
-use crate::internal::utils::Counted;
-use crate::internal::{Acquired, Cs, RetireType, TaggedCnt};
+use crate::internal::utils::RcInner;
+use crate::internal::{Acquired, Cs, TaggedCnt};
 
 /// A tagged pointer which is pointing a `CountedObjPtr<T>`.
 ///
@@ -68,10 +68,20 @@ impl Cs for CsEBR {
         Self::from(crossbeam::epoch::pin())
     }
 
+    #[inline]
+    unsafe fn unprotected() -> Self {
+        Self { guard: None }
+    }
+
     #[inline(always)]
-    fn create_object<T>(&self, obj: T) -> *mut Counted<T> {
-        let obj = Counted::new(obj);
+    fn create_object<T>(obj: T) -> *mut RcInner<T> {
+        let obj = RcInner::new(obj);
         Box::into_raw(Box::new(obj))
+    }
+
+    #[inline]
+    fn delete_object<T>(ptr: *mut RcInner<T>) {
+        drop(unsafe { Box::from_raw(ptr) });
     }
 
     #[inline(always)]
@@ -80,47 +90,26 @@ impl Cs for CsEBR {
     }
 
     #[inline(always)]
-    fn protect_snapshot<T>(
+    fn protect_from_strong<T>(
         &self,
         link: &atomic::Atomic<TaggedCnt<T>>,
         shield: &mut Self::RawShield<T>,
-    ) -> bool {
-        let ptr = link.load(Ordering::Acquire);
-        if !ptr.is_null() && unsafe { ptr.deref() }.ref_count() == 0 {
-            false
-        } else {
-            *shield = AcquiredEBR(ptr);
-            true
-        }
+    ) {
+        *shield = AcquiredEBR(link.load(Ordering::Acquire));
     }
 
     #[inline(always)]
-    unsafe fn delete_object<T>(&self, ptr: *mut Counted<T>) {
-        drop(Box::from_raw(ptr));
-    }
-
-    #[inline(always)]
-    unsafe fn retire<T>(&self, ptr: *mut Counted<T>, ret_type: RetireType) {
+    unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
+    where
+        F: FnOnce(&mut RcInner<T>),
+    {
         debug_assert!(!ptr.is_null());
         let cnt = &mut *ptr;
         if let Some(guard) = &self.guard {
-            guard.defer_unchecked(move || {
-                let inner_guard = Self::unprotected();
-                inner_guard.eject(cnt, ret_type);
-            });
+            guard.defer_unchecked(move || f(cnt));
         } else {
-            self.eject(cnt, ret_type);
+            f(cnt);
         }
-    }
-
-    #[inline]
-    unsafe fn without_epoch() -> Self {
-        Self { guard: None }
-    }
-
-    #[inline]
-    unsafe fn unprotected() -> Self {
-        Self { guard: None }
     }
 
     #[inline]
