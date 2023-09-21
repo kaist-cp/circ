@@ -55,10 +55,14 @@ impl<T> RcInner<T> {
             // In strong-only, at this point, there can’t be guard for this pointer anymore
             // (no zero set needed)
             self.dispose();
-            C::delete_object(self);
+            drop(C::own_object(self));
         } else {
             self.decrement_strong::<C>(None);
         }
+    }
+
+    pub(crate) fn into_inner(self) -> T {
+        ManuallyDrop::into_inner(self.storage)
     }
 }
 

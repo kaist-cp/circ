@@ -185,6 +185,15 @@ impl<T, C: Cs> AtomicRc<T, C> {
         let prev = link.fetch_or(tag, order);
         TaggedCnt::new(prev as *mut _)
     }
+
+    #[inline]
+    pub unsafe fn into_inner(self) -> T {
+        let ptr = self.link.load(Ordering::Relaxed).as_raw();
+        debug_assert!(!ptr.is_null());
+        debug_assert!((*ptr).strong.load(Ordering::Relaxed) == 1);
+        forget(self);
+        C::own_object(ptr).into_inner()
+    }
 }
 
 impl<T, C: Cs> Drop for AtomicRc<T, C> {
@@ -294,6 +303,15 @@ impl<T, C: Cs> Rc<T, C> {
         // Skip decrementing the ref count.
         forget(self);
         new_ptr
+    }
+
+    #[inline]
+    pub unsafe fn into_inner(self) -> T {
+        let ptr = self.ptr.as_raw();
+        debug_assert!(!ptr.is_null());
+        debug_assert!((*ptr).strong.load(Ordering::Relaxed) == 1);
+        forget(self);
+        C::own_object(ptr).into_inner()
     }
 }
 

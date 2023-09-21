@@ -33,7 +33,7 @@ pub trait Cs {
     fn new() -> Self;
     unsafe fn unprotected() -> Self;
     fn create_object<T>(obj: T) -> *mut RcInner<T>;
-    fn delete_object<T>(ptr: *mut RcInner<T>);
+    unsafe fn own_object<T>(ptr: *mut RcInner<T>) -> RcInner<T>;
     /// Creates a shield for the given pointer, assuming that `ptr` is already protected by a
     /// reference count.
     fn reserve<T>(&self, ptr: TaggedCnt<T>, shield: &mut Self::RawShield<T>);

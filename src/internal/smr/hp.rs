@@ -78,8 +78,8 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    fn delete_object<T>(ptr: *mut RcInner<T>) {
-        drop(unsafe { Box::from_raw(ptr) });
+    unsafe fn own_object<T>(ptr: *mut RcInner<T>) -> RcInner<T> {
+        *Box::from_raw(ptr)
     }
 
     #[inline]
