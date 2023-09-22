@@ -1,6 +1,6 @@
 use core::mem;
 use std::{
-    mem::{size_of, ManuallyDrop},
+    mem::ManuallyDrop,
     ptr::null_mut,
     sync::atomic::{AtomicU32, Ordering},
 };
@@ -15,7 +15,7 @@ pub struct RcInner<T> {
 }
 
 impl<T> RcInner<T> {
-    pub const ZERO: u32 = 1 << (size_of::<u32>() - 1);
+    pub const ZERO: u32 = 1 << (u32::BITS - 1);
 
     pub(crate) fn new(val: T) -> Self {
         Self {
@@ -47,7 +47,8 @@ impl<T> RcInner<T> {
             return false;
         }
         if val == 0 {
-            // Create a permission to run decrement again.
+            // The previous fetch_add created a permission to run decrement again.
+            // Now create an actual reference.
             self.strong.fetch_add(1, Ordering::SeqCst);
         }
         return true;
@@ -78,7 +79,8 @@ impl<T> RcInner<T> {
 
     pub(crate) fn increment_weak(&self) {
         if self.weak.fetch_add(1, Ordering::SeqCst) == 0 {
-            // Create a permission to run decrement again.
+            // The previous fetch_add created a permission to run decrement again.
+            // Now create an actual reference.
             self.weak.fetch_add(1, Ordering::SeqCst);
         }
     }
