@@ -94,7 +94,7 @@ impl<T> RcInner<T> {
     }
 
     pub(crate) unsafe fn try_destruct<C: Cs>(&mut self) {
-        if self.weak.fetch_add(0, Ordering::SeqCst) == 0 {
+        if self.weak.load(Ordering::SeqCst) == 0 {
             drop(C::own_object(self));
         } else {
             self.decrement_weak::<C>(None);
