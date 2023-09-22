@@ -7,7 +7,7 @@ use std::{
 use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
-use crate::{Acquired, AtomicWeak, Cs, Pointer, Tagged, TaggedCnt};
+use crate::{Acquired, AtomicWeak, Cs, Pointer, Tagged, TaggedCnt, Weak};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -377,6 +377,18 @@ impl<T, C: Cs> Snapshot<T, C> {
     #[inline]
     pub fn protect(&mut self, ptr: &Rc<T, C>, cs: &C) {
         cs.reserve(ptr.as_ptr(), &mut self.acquired);
+    }
+
+    #[inline]
+    pub fn protect_weak(&mut self, ptr: &Weak<T, C>, cs: &C) -> bool {
+        cs.reserve(ptr.as_ptr(), &mut self.acquired);
+        if !self.acquired.is_null() {
+            if !unsafe { self.acquired.as_ptr().deref() }.non_zero() {
+                self.acquired.clear();
+                return false;
+            }
+        }
+        true
     }
 
     #[inline(always)]
