@@ -7,7 +7,7 @@ use std::{
 use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
-use crate::{Acquired, Cs, Pointer, Tagged, TaggedCnt};
+use crate::{Acquired, AtomicWeak, Cs, Pointer, Tagged, TaggedCnt};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -355,7 +355,23 @@ impl<T, C: Cs> Snapshot<T, C> {
 
     #[inline]
     pub fn load(&mut self, from: &AtomicRc<T, C>, cs: &C) {
-        cs.protect_from_strong(&from.link, &mut self.acquired);
+        cs.acquire(&from.link, &mut self.acquired);
+    }
+
+    #[inline]
+    pub fn load_from_weak(&mut self, from: &AtomicWeak<T, C>, cs: &C) {
+        loop {
+            let ptr = cs.acquire(&from.link, &mut self.acquired);
+
+            if !ptr.is_null() && unsafe { ptr.deref().non_zero() } {
+                return;
+            } else {
+                self.acquired.clear();
+                if ptr.is_null() || ptr == from.link.load(Ordering::Acquire) {
+                    return;
+                }
+            }
+        }
     }
 
     #[inline]

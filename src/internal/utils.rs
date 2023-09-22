@@ -1,6 +1,6 @@
 use core::mem;
 use std::{
-    mem::ManuallyDrop,
+    mem::{size_of, ManuallyDrop},
     ptr::null_mut,
     sync::atomic::{AtomicU32, Ordering},
 };
@@ -11,13 +11,17 @@ use crate::Cs;
 pub struct RcInner<T> {
     storage: ManuallyDrop<T>,
     pub(crate) strong: AtomicU32,
+    pub(crate) weak: AtomicU32,
 }
 
 impl<T> RcInner<T> {
+    pub const ZERO: u32 = 1 << (size_of::<u32>() - 1);
+
     pub(crate) fn new(val: T) -> Self {
         Self {
             storage: ManuallyDrop::new(val),
             strong: AtomicU32::new(1),
+            weak: AtomicU32::new(1),
         }
     }
 
@@ -33,11 +37,20 @@ impl<T> RcInner<T> {
         ManuallyDrop::drop(&mut self.storage)
     }
 
-    pub(crate) fn increment_strong(&self) {
-        if self.strong.fetch_add(1, Ordering::SeqCst) == 0 {
+    pub(crate) fn into_inner(self) -> T {
+        ManuallyDrop::into_inner(self.storage)
+    }
+
+    pub(crate) fn increment_strong(&self) -> bool {
+        let val = self.strong.fetch_add(1, Ordering::SeqCst);
+        if (val & Self::ZERO) != 0 {
+            return false;
+        }
+        if val == 0 {
             // Create a permission to run decrement again.
             self.strong.fetch_add(1, Ordering::SeqCst);
         }
+        return true;
     }
 
     pub(crate) unsafe fn decrement_strong<C: Cs>(&mut self, cs: Option<&C>) {
@@ -51,18 +64,51 @@ impl<T> RcInner<T> {
     }
 
     pub(crate) unsafe fn try_zero<C: Cs>(&mut self) {
-        if self.strong.fetch_add(0, Ordering::SeqCst) == 0 {
-            // In strong-only, at this point, there can’t be guard for this pointer anymore
-            // (no zero set needed)
+        if self
+            .strong
+            .compare_exchange(0, Self::ZERO, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
             self.dispose();
-            drop(C::own_object(self));
+            self.decrement_weak::<C>(None);
         } else {
             self.decrement_strong::<C>(None);
         }
     }
 
-    pub(crate) fn into_inner(self) -> T {
-        ManuallyDrop::into_inner(self.storage)
+    pub(crate) fn increment_weak(&self) {
+        if self.weak.fetch_add(1, Ordering::SeqCst) == 0 {
+            // Create a permission to run decrement again.
+            self.weak.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) unsafe fn decrement_weak<C: Cs>(&mut self, cs: Option<&C>) {
+        if self.weak.fetch_sub(1, Ordering::SeqCst) == 1 {
+            if let Some(cs) = cs {
+                cs.defer(self, |inner| unsafe { inner.try_destruct::<C>() })
+            } else {
+                C::new().defer(self, |inner| unsafe { inner.try_destruct::<C>() })
+            }
+        }
+    }
+
+    pub(crate) unsafe fn try_destruct<C: Cs>(&mut self) {
+        if self.weak.fetch_add(0, Ordering::SeqCst) == 0 {
+            drop(C::own_object(self));
+        } else {
+            self.decrement_weak::<C>(None);
+        }
+    }
+
+    pub(crate) fn non_zero(&self) -> bool {
+        match self
+            .strong
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            Ok(_) => return true,
+            Err(curr) => (curr & Self::ZERO) == 0,
+        }
     }
 }
 

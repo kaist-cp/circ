@@ -90,11 +90,11 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    fn protect_from_strong<T>(
+    fn acquire<T>(
         &self,
         link: &atomic::Atomic<TaggedCnt<T>>,
         shield: &mut Self::RawShield<T>,
-    ) {
+    ) -> TaggedCnt<T> {
         let mut ptr = link.load(Ordering::Relaxed);
         loop {
             shield.ptr = ptr;
@@ -103,7 +103,7 @@ impl Cs for CsHP {
 
             let new_ptr = link.load(Ordering::Acquire);
             if new_ptr == ptr {
-                break;
+                break ptr;
             }
             ptr = new_ptr;
         }

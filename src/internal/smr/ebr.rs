@@ -90,12 +90,14 @@ impl Cs for CsEBR {
     }
 
     #[inline(always)]
-    fn protect_from_strong<T>(
+    fn acquire<T>(
         &self,
         link: &atomic::Atomic<TaggedCnt<T>>,
         shield: &mut Self::RawShield<T>,
-    ) {
-        *shield = AcquiredEBR(link.load(Ordering::Acquire));
+    ) -> TaggedCnt<T> {
+        let ptr = link.load(Ordering::Acquire);
+        *shield = AcquiredEBR(ptr);
+        ptr
     }
 
     #[inline(always)]

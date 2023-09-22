@@ -37,7 +37,11 @@ pub trait Cs {
     /// Creates a shield for the given pointer, assuming that `ptr` is already protected by a
     /// reference count.
     fn reserve<T>(&self, ptr: TaggedCnt<T>, shield: &mut Self::RawShield<T>);
-    fn protect_from_strong<T>(&self, link: &Atomic<TaggedCnt<T>>, shield: &mut Self::RawShield<T>);
+    fn acquire<T>(
+        &self,
+        link: &Atomic<TaggedCnt<T>>,
+        shield: &mut Self::RawShield<T>,
+    ) -> TaggedCnt<T>;
     unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
         F: FnOnce(&mut RcInner<T>);
