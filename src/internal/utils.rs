@@ -57,14 +57,14 @@ impl<T> RcInner<T> {
     pub(crate) unsafe fn decrement_strong<C: Cs>(&mut self, cs: Option<&C>) {
         if self.strong.fetch_sub(1, Ordering::SeqCst) == 1 {
             if let Some(cs) = cs {
-                cs.defer(self, |inner| unsafe { inner.try_zero::<C>() })
+                cs.defer(self, |inner| unsafe { inner.try_destruct::<C>() })
             } else {
-                C::new().defer(self, |inner| unsafe { inner.try_zero::<C>() })
+                C::new().defer(self, |inner| unsafe { inner.try_destruct::<C>() })
             }
         }
     }
 
-    pub(crate) unsafe fn try_zero<C: Cs>(&mut self) {
+    pub(crate) unsafe fn try_destruct<C: Cs>(&mut self) {
         if self
             .strong
             .compare_exchange(0, Self::ZERO, Ordering::SeqCst, Ordering::SeqCst)
@@ -88,14 +88,14 @@ impl<T> RcInner<T> {
     pub(crate) unsafe fn decrement_weak<C: Cs>(&mut self, cs: Option<&C>) {
         if self.weak.fetch_sub(1, Ordering::SeqCst) == 1 {
             if let Some(cs) = cs {
-                cs.defer(self, |inner| unsafe { inner.try_destruct::<C>() })
+                cs.defer(self, |inner| unsafe { inner.try_free::<C>() })
             } else {
-                C::new().defer(self, |inner| unsafe { inner.try_destruct::<C>() })
+                C::new().defer(self, |inner| unsafe { inner.try_free::<C>() })
             }
         }
     }
 
-    pub(crate) unsafe fn try_destruct<C: Cs>(&mut self) {
+    pub(crate) unsafe fn try_free<C: Cs>(&mut self) {
         if self.weak.load(Ordering::SeqCst) == 0 {
             drop(C::own_object(self));
         } else {
