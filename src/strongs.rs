@@ -187,12 +187,20 @@ impl<T, C: Cs> AtomicRc<T, C> {
     }
 
     #[inline]
-    pub unsafe fn into_inner(self) -> T {
+    pub unsafe fn into_inner(self) -> Option<T> {
         let ptr = self.link.load(Ordering::Relaxed).as_raw();
-        debug_assert!(!ptr.is_null());
-        debug_assert!((*ptr).strong.load(Ordering::Relaxed) == 1);
         forget(self);
-        C::own_object(ptr).into_inner()
+        
+        if ptr.is_null() {
+            return None;
+        }
+        if let Some(cnt) = ptr.as_mut() {
+            if cnt.strong.load(Ordering::Relaxed) == 1 {
+                return Some(C::own_object(ptr).into_inner());
+            }
+            cnt.decrement_strong(Some(&C::unprotected()));
+        }
+        return None;
     }
 }
 
@@ -306,12 +314,20 @@ impl<T, C: Cs> Rc<T, C> {
     }
 
     #[inline]
-    pub unsafe fn into_inner(self) -> T {
+    pub unsafe fn into_inner(self) -> Option<T> {
         let ptr = self.ptr.as_raw();
-        debug_assert!(!ptr.is_null());
-        debug_assert!((*ptr).strong.load(Ordering::Relaxed) == 1);
         forget(self);
-        C::own_object(ptr).into_inner()
+        
+        if ptr.is_null() {
+            return None;
+        }
+        if let Some(cnt) = ptr.as_mut() {
+            if cnt.strong.load(Ordering::Relaxed) == 1 {
+                return Some(C::own_object(ptr).into_inner());
+            }
+            cnt.decrement_strong(Some(&C::unprotected()));
+        }
+        return None;
     }
 }
 
