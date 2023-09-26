@@ -15,7 +15,8 @@ pub struct RcInner<T> {
 }
 
 impl<T> RcInner<T> {
-    pub const ZERO: u32 = 1 << (u32::BITS - 1);
+    pub const DESTRUCTED: u32 = 1 << (u32::BITS - 1);
+    pub const WEAK_EXISTS: u32 = 1 << (u32::BITS - 1);
 
     pub(crate) fn new(val: T) -> Self {
         Self {
@@ -43,7 +44,7 @@ impl<T> RcInner<T> {
 
     pub(crate) fn increment_strong(&self) -> bool {
         let val = self.strong.fetch_add(1, Ordering::SeqCst);
-        if (val & Self::ZERO) != 0 {
+        if (val & Self::DESTRUCTED) != 0 {
             return false;
         }
         if val == 0 {
@@ -67,26 +68,34 @@ impl<T> RcInner<T> {
     pub(crate) unsafe fn try_destruct<C: Cs>(&mut self) {
         if self
             .strong
-            .compare_exchange(0, Self::ZERO, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(0, Self::DESTRUCTED, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
             self.dispose();
-            self.decrement_weak::<C>(None);
+            if self.weak.load(Ordering::SeqCst) & Self::WEAK_EXISTS == 0 {
+                drop(C::own_object(self));
+            } else {
+                self.decrement_weak::<C>(None);
+            }
         } else {
             self.decrement_strong::<C>(None);
         }
     }
 
     pub(crate) fn increment_weak(&self) {
-        if self.weak.fetch_add(1, Ordering::SeqCst) == 0 {
+        let old_weak = self.weak.fetch_add(1, Ordering::SeqCst);
+        if old_weak & !Self::WEAK_EXISTS == 0 {
             // The previous fetch_add created a permission to run decrement again.
             // Now create an actual reference.
             self.weak.fetch_add(1, Ordering::SeqCst);
         }
+        if old_weak & Self::WEAK_EXISTS == 0 {
+            self.weak.fetch_or(Self::WEAK_EXISTS, Ordering::SeqCst);
+        }
     }
 
     pub(crate) unsafe fn decrement_weak<C: Cs>(&mut self, cs: Option<&C>) {
-        if self.weak.fetch_sub(1, Ordering::SeqCst) == 1 {
+        if self.weak.fetch_sub(1, Ordering::SeqCst) & !Self::WEAK_EXISTS == 1 {
             if let Some(cs) = cs {
                 cs.defer(self, |inner| unsafe { inner.try_free::<C>() })
             } else {
@@ -96,7 +105,7 @@ impl<T> RcInner<T> {
     }
 
     pub(crate) unsafe fn try_free<C: Cs>(&mut self) {
-        if self.weak.load(Ordering::SeqCst) == 0 {
+        if self.weak.load(Ordering::SeqCst) & !Self::WEAK_EXISTS == 0 {
             drop(C::own_object(self));
         } else {
             self.decrement_weak::<C>(None);
@@ -104,13 +113,15 @@ impl<T> RcInner<T> {
     }
 
     pub(crate) fn non_zero(&self) -> bool {
-        match self
-            .strong
-            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-        {
-            Ok(_) => return true,
-            Err(curr) => (curr & Self::ZERO) == 0,
+        let mut curr = self.strong.load(Ordering::SeqCst);
+        if curr == 0 {
+            curr = self
+                .strong
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .err()
+                .unwrap_or(1);
         }
+        (curr & Self::DESTRUCTED) == 0
     }
 }
 
