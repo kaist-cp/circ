@@ -117,7 +117,7 @@ impl Cs for CsEBR {
     #[inline]
     fn clear(&mut self) {
         if let Some(guard) = &mut self.guard {
-            guard.repin_after(|| {});
+            guard.repin();
         }
     }
 }
