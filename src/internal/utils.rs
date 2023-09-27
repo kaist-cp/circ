@@ -1,5 +1,6 @@
 use core::mem;
 use std::{
+    hash::Hash,
     mem::ManuallyDrop,
     ptr::null_mut,
     sync::atomic::{AtomicU32, Ordering},
@@ -26,19 +27,19 @@ impl<T> RcInner<T> {
         }
     }
 
-    pub(crate) fn data(&self) -> &T {
+    pub fn data(&self) -> &T {
         &self.storage
     }
 
-    pub(crate) fn data_mut(&mut self) -> &mut T {
+    pub fn data_mut(&mut self) -> &mut T {
         &mut self.storage
     }
 
-    pub(crate) unsafe fn dispose(&mut self) {
+    pub unsafe fn dispose(&mut self) {
         ManuallyDrop::drop(&mut self.storage)
     }
 
-    pub(crate) fn into_inner(self) -> T {
+    pub fn into_inner(self) -> T {
         ManuallyDrop::into_inner(self.storage)
     }
 
@@ -149,6 +150,14 @@ impl<T> PartialEq for Tagged<T> {
     }
 }
 
+impl<T> Eq for Tagged<T> {}
+
+impl<T> Hash for Tagged<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state)
+    }
+}
+
 impl<T> Tagged<T> {
     pub fn new(ptr: *mut T) -> Self {
         Self { ptr }
@@ -183,6 +192,22 @@ impl<T> Tagged<T> {
 
     pub unsafe fn deref_mut<'g>(&mut self) -> &'g mut T {
         &mut *self.as_raw()
+    }
+
+    pub unsafe fn as_ref<'g>(&self) -> Option<&'g T> {
+        if self.is_null() {
+            None
+        } else {
+            Some(self.deref())
+        }
+    }
+
+    pub unsafe fn as_mut<'g>(&mut self) -> Option<&'g mut T> {
+        if self.is_null() {
+            None
+        } else {
+            Some(self.deref_mut())
+        }
     }
 }
 

@@ -190,10 +190,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
     pub unsafe fn into_inner(self) -> Option<T> {
         let ptr = self.link.load(Ordering::Relaxed).as_raw();
         forget(self);
-        
-        if ptr.is_null() {
-            return None;
-        }
+
         if let Some(cnt) = ptr.as_mut() {
             if cnt.strong.load(Ordering::Relaxed) == 1 {
                 return Some(C::own_object(ptr).into_inner());
@@ -317,10 +314,7 @@ impl<T, C: Cs> Rc<T, C> {
     pub unsafe fn into_inner(self) -> Option<T> {
         let ptr = self.ptr.as_raw();
         forget(self);
-        
-        if ptr.is_null() {
-            return None;
-        }
+
         if let Some(cnt) = ptr.as_mut() {
             if cnt.strong.load(Ordering::Relaxed) == 1 {
                 return Some(C::own_object(ptr).into_inner());
