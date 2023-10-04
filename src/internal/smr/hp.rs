@@ -51,6 +51,13 @@ impl<T> Acquired<T> for AcquiredHP<T> {
     fn eq(&self, other: &Self) -> bool {
         self.ptr == other.ptr
     }
+
+    #[inline]
+    unsafe fn copy_to(&self, other: &mut Self) {
+        other.ptr = self.ptr;
+        other.hazptr.protect_raw(other.ptr.as_raw());
+        membarrier::light_membarrier();
+    }
 }
 
 pub struct CsHP {
@@ -86,7 +93,7 @@ impl Cs for CsHP {
     fn reserve<T>(&self, ptr: TaggedCnt<T>, shield: &mut Self::RawShield<T>) {
         shield.ptr = ptr;
         shield.hazptr.protect_raw(ptr.as_raw());
-        membarrier::light();
+        membarrier::light_membarrier();
     }
 
     #[inline]
@@ -99,7 +106,7 @@ impl Cs for CsHP {
         loop {
             shield.ptr = ptr;
             shield.hazptr.protect_raw(ptr.as_raw());
-            membarrier::light();
+            membarrier::light_membarrier();
 
             let new_ptr = link.load(Ordering::Acquire);
             if new_ptr == ptr {

@@ -425,6 +425,11 @@ impl<T, C: Cs> Snapshot<T, C> {
     pub fn swap(p1: &mut Self, p2: &mut Self) {
         <C::RawShield<T> as Acquired<T>>::swap(&mut p1.acquired, &mut p2.acquired)
     }
+
+    #[inline]
+    pub unsafe fn copy_to(&self, other: &mut Self) {
+        self.acquired.copy_to(&mut other.acquired);
+    }
 }
 
 impl<T, C: Cs> Default for Snapshot<T, C> {

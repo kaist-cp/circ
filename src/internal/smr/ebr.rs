@@ -47,6 +47,11 @@ impl<T> Acquired<T> for AcquiredEBR<T> {
     fn set_tag(&mut self, tag: usize) {
         self.0 = self.0.with_tag(tag);
     }
+
+    #[inline]
+    unsafe fn copy_to(&self, other: &mut Self) {
+        other.0 = self.0;
+    }
 }
 
 pub struct CsEBR {

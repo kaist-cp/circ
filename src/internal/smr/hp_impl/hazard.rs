@@ -53,7 +53,7 @@ impl HazardPointer {
     /// For a pointer `p`, if "`src` still pointing to `pointer`" implies that `p` is not retired,
     /// then `Ok(())` means that shields set to `p` are validated.
     pub fn validate<T>(pointer: *mut T, src: &AtomicPtr<T>) -> Result<(), *mut T> {
-        membarrier::light();
+        membarrier::light_membarrier();
         let new = src.load(Ordering::Acquire);
         if pointer == new {
             Ok(())

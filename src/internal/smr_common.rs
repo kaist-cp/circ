@@ -18,6 +18,7 @@ pub trait Acquired<T> {
     fn is_null(&self) -> bool;
     fn swap(p1: &mut Self, p2: &mut Self);
     fn eq(&self, other: &Self) -> bool;
+    unsafe fn copy_to(&self, other: &mut Self);
 }
 
 /// A SMR-specific critical section manager trait.
