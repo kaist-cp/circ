@@ -53,24 +53,15 @@ impl<T, C: Cs> AtomicWeak<T, C> {
     }
 
     #[inline]
-    pub fn store<P: WeakPtr<T, C>>(&self, ptr: P, order: Ordering, cs: &C) {
+    pub fn store<P: WeakPtr<T, C>>(&self, ptr: P, order: Ordering) {
         let new_ptr = ptr.as_ptr();
         ptr.into_weak_count();
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                cnt.decrement_weak(Some(cs))
+                cnt.decrement_weak::<C>()
             }
         }
-    }
-
-    /// Swap the currently stored shared pointer with the given shared pointer.
-    /// This operation is thread-safe.
-    /// (It is equivalent to `exchange` from the original implementation.)
-    #[inline(always)]
-    pub fn swap(&self, new: Weak<T, C>, order: Ordering, _: &C) -> Weak<T, C> {
-        let new_ptr = new.into_raw();
-        Weak::from_raw(self.link.swap(new_ptr, order))
     }
 
     /// Atomically compares the underlying pointer with expected, and if they refer to
@@ -84,7 +75,7 @@ impl<T, C: Cs> AtomicWeak<T, C> {
         success: Ordering,
         failure: Ordering,
         _: &'g C,
-    ) -> Result<Weak<T, C>, CompareExchangeErrorWeak<T, P>>
+    ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, P>>
     where
         P: WeakPtr<T, C>,
     {
@@ -93,7 +84,7 @@ impl<T, C: Cs> AtomicWeak<T, C> {
             .compare_exchange(expected, desired.as_ptr(), success, failure)
         {
             Ok(_) => {
-                let weak = Weak::from_raw(expected);
+                drop(Weak::<T, C>::from_raw(expected));
                 // Here, `into_weak_count` increment the reference count of `desired` only if
                 // `desired` is `Snapshot` or its variants.
                 //
@@ -101,7 +92,7 @@ impl<T, C: Cs> AtomicWeak<T, C> {
                 // `desired` is moved to `self`. Because of this reason, we must skip decrementing
                 // the reference count of `desired`.
                 desired.into_weak_count();
-                Ok(weak)
+                Ok(expected)
             }
             Err(current) => Err(CompareExchangeErrorWeak { desired, current }),
         }
@@ -144,7 +135,7 @@ impl<T, C: Cs> AtomicWeak<T, C> {
         success: Ordering,
         failure: Ordering,
         cs: &'g C,
-    ) -> Result<Weak<T, C>, CompareExchangeErrorWeak<T, P>>
+    ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, P>>
     where
         P: WeakPtr<T, C>,
     {
@@ -196,8 +187,7 @@ impl<T, C: Cs> Drop for AtomicWeak<T, C> {
         let ptr = self.link.load(Ordering::SeqCst);
         unsafe {
             if let Some(cnt) = ptr.as_raw().as_mut() {
-                let cs = &C::new();
-                cnt.decrement_weak(Some(cs));
+                cnt.decrement_weak::<C>();
             }
         }
     }
@@ -299,8 +289,7 @@ impl<T, C: Cs> Drop for Weak<T, C> {
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                let cs = &C::new();
-                cnt.decrement_weak(Some(cs));
+                cnt.decrement_weak::<C>();
             }
         }
     }

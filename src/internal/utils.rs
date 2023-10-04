@@ -17,7 +17,6 @@ pub struct RcInner<T> {
 
 impl<T> RcInner<T> {
     pub const DESTRUCTED: u32 = 1 << (u32::BITS - 1);
-    pub const WEAK_EXISTS: u32 = 1 << (u32::BITS - 1);
 
     pub(crate) fn new(val: T) -> Self {
         Self {
@@ -73,43 +72,19 @@ impl<T> RcInner<T> {
             .is_ok()
         {
             self.dispose();
-            if self.weak.load(Ordering::SeqCst) & Self::WEAK_EXISTS == 0 {
-                drop(C::own_object(self));
-            } else {
-                self.decrement_weak::<C>(None);
-            }
+            self.decrement_weak::<C>();
         } else {
             self.decrement_strong::<C>(None);
         }
     }
 
     pub(crate) fn increment_weak(&self) {
-        let old_weak = self.weak.fetch_add(1, Ordering::SeqCst);
-        if old_weak & !Self::WEAK_EXISTS == 0 {
-            // The previous fetch_add created a permission to run decrement again.
-            // Now create an actual reference.
-            self.weak.fetch_add(1, Ordering::SeqCst);
-        }
-        if old_weak & Self::WEAK_EXISTS == 0 {
-            self.weak.fetch_or(Self::WEAK_EXISTS, Ordering::SeqCst);
-        }
+        self.weak.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub(crate) unsafe fn decrement_weak<C: Cs>(&mut self, cs: Option<&C>) {
-        if self.weak.fetch_sub(1, Ordering::SeqCst) & !Self::WEAK_EXISTS == 1 {
-            if let Some(cs) = cs {
-                cs.defer(self, |inner| unsafe { inner.try_free::<C>() })
-            } else {
-                C::new().defer(self, |inner| unsafe { inner.try_free::<C>() })
-            }
-        }
-    }
-
-    pub(crate) unsafe fn try_free<C: Cs>(&mut self) {
-        if self.weak.load(Ordering::SeqCst) & !Self::WEAK_EXISTS == 0 {
+    pub(crate) unsafe fn decrement_weak<C: Cs>(&mut self) {
+        if self.weak.fetch_sub(1, Ordering::SeqCst) == 1 {
             drop(C::own_object(self));
-        } else {
-            self.decrement_weak::<C>(None);
         }
     }
 
