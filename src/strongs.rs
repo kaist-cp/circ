@@ -1,13 +1,13 @@
 use std::{
     marker::PhantomData,
     mem::{self, forget},
-    sync::atomic::AtomicUsize,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
-use atomic::{Atomic, Ordering};
+use atomic::Atomic;
 use static_assertions::const_assert;
 
-use crate::{Acquired, AtomicWeak, Cs, Pointer, Tagged, TaggedCnt, Weak};
+use crate::{Acquired, AtomicWeak, Cs, Pointer, Tagged, TaggedCnt, Validatable, Weak, MSB};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -57,7 +57,13 @@ impl<T, C: Cs> AtomicRc<T, C> {
     /// instead.
     #[inline]
     pub fn load(&self, order: Ordering) -> TaggedCnt<T> {
-        self.link.load(order)
+        let ptr = self.link.load(order);
+        if !ptr.msb() {
+            return ptr;
+        }
+        let weak_guard = unsafe { &*((ptr.as_usize() ^ MSB) as *mut C::WeakGuard<T>) };
+        assert!(weak_guard.validate());
+        return weak_guard.ptr();
     }
 
     #[inline]
@@ -65,6 +71,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
         let new_ptr = ptr.as_ptr();
         ptr.into_ref_count();
         let old_ptr = self.link.swap(new_ptr, order);
+        debug_assert!(!old_ptr.msb());
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
                 cnt.decrement_strong(Some(cs));
@@ -78,7 +85,9 @@ impl<T, C: Cs> AtomicRc<T, C> {
     #[inline(always)]
     pub fn swap(&self, new: Rc<T, C>, order: Ordering, _: &C) -> Rc<T, C> {
         let new_ptr = new.into_raw();
-        Rc::from_raw(self.link.swap(new_ptr, order))
+        let old_ptr = self.link.swap(new_ptr, order);
+        debug_assert!(!old_ptr.msb());
+        Rc::from_raw(old_ptr)
     }
 
     /// Atomically compares the underlying pointer with expected, and if they refer to
@@ -96,6 +105,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
     where
         P: StrongPtr<T, C>,
     {
+        debug_assert!(!expected.msb());
         match self
             .link
             .compare_exchange(expected, desired.as_ptr(), success, failure)
@@ -116,6 +126,38 @@ impl<T, C: Cs> AtomicRc<T, C> {
     }
 
     #[inline]
+    pub fn compare_exchange_loaned<'g>(
+        &self,
+        expected: TaggedCnt<T>,
+        desired: &Snapshot<T, C>,
+        repay_with: &Self,
+        success: Ordering,
+        failure: Ordering,
+        cs: &'g C,
+    ) -> Result<Rc<T, C>, TaggedCnt<T>> {
+        debug_assert!(!expected.msb());
+        let loan = Rc::from_raw(desired.as_ptr());
+        match self.compare_exchange(expected, loan, success, failure, cs) {
+            Ok(q) => {
+                let weak_guard = cs.weak_acquire(desired.as_ptr()) as usize | MSB;
+                let link = unsafe { &*(&repay_with.link as *const _ as *const AtomicUsize) };
+                link.compare_exchange(
+                    desired.as_ptr().as_usize(),
+                    weak_guard,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .unwrap();
+                Ok(q)
+            }
+            Err(e) => {
+                forget(e.desired);
+                Err(e.current)
+            }
+        }
+    }
+
+    #[inline]
     pub fn compare_exchange_tag<'g, P>(
         &self,
         expected: P,
@@ -127,6 +169,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
     where
         P: StrongPtr<T, C>,
     {
+        debug_assert!(!expected.as_ptr().msb());
         let desired = expected.as_ptr().with_tag(desired_tag);
         match self
             .link
@@ -156,6 +199,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
     where
         P: StrongPtr<T, C>,
     {
+        debug_assert!(!expected.msb());
         loop {
             current_snap.load(self, cs);
             if current_snap.as_ptr() != expected {
@@ -204,11 +248,17 @@ impl<T, C: Cs> AtomicRc<T, C> {
 impl<T, C: Cs> Drop for AtomicRc<T, C> {
     #[inline(always)]
     fn drop(&mut self) {
-        let ptr = self.link.load(Ordering::Relaxed);
         unsafe {
-            if let Some(cnt) = ptr.as_raw().as_mut() {
-                let cs = &C::new();
-                cnt.decrement_strong(Some(cs));
+            let ptr = self.link.load(Ordering::Relaxed);
+            if ptr.msb() {
+                drop(C::own_weak_guard(
+                    (ptr.as_usize() ^ MSB) as *mut C::WeakGuard<T>,
+                ));
+            } else {
+                if let Some(cnt) = ptr.as_raw().as_mut() {
+                    let cs = &C::new();
+                    cnt.decrement_strong(Some(cs));
+                }
             }
         }
     }
@@ -365,13 +415,13 @@ impl<T, C: Cs> Snapshot<T, C> {
 
     #[inline]
     pub fn load(&mut self, from: &AtomicRc<T, C>, cs: &C) {
-        cs.acquire(&from.link, &mut self.acquired);
+        cs.acquire(|order| from.load(order), &mut self.acquired);
     }
 
     #[inline]
     pub fn load_from_weak(&mut self, from: &AtomicWeak<T, C>, cs: &C) {
         loop {
-            let ptr = cs.acquire(&from.link, &mut self.acquired);
+            let ptr = cs.acquire(|order| from.load(order), &mut self.acquired);
 
             if !ptr.is_null() && unsafe { ptr.deref().non_zero() } {
                 return;

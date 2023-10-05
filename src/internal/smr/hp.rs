@@ -2,7 +2,7 @@ use std::{mem::swap, ptr::null};
 
 use atomic::Ordering;
 
-use crate::{Acquired, Cs, RcInner, TaggedCnt};
+use crate::{Acquired, Cs, RcInner, TaggedCnt, Validatable};
 
 use super::hp_impl::{HazardPointer, Thread, DEFAULT_THREAD};
 
@@ -60,12 +60,25 @@ impl<T> Acquired<T> for AcquiredHP<T> {
     }
 }
 
+pub struct WeakGuardHP<T>(AcquiredHP<T>);
+
+impl<T> Validatable<T> for WeakGuardHP<T> {
+    fn validate(&self) -> bool {
+        true
+    }
+
+    fn ptr(&self) -> TaggedCnt<T> {
+        self.0.ptr
+    }
+}
+
 pub struct CsHP {
     thread: *const Thread,
 }
 
 impl Cs for CsHP {
     type RawShield<T> = AcquiredHP<T>;
+    type WeakGuard<T> = WeakGuardHP<T>;
 
     #[inline]
     fn new() -> Self {
@@ -97,23 +110,36 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    fn acquire<T>(
-        &self,
-        link: &atomic::Atomic<TaggedCnt<T>>,
-        shield: &mut Self::RawShield<T>,
-    ) -> TaggedCnt<T> {
-        let mut ptr = link.load(Ordering::Relaxed);
+    fn acquire<T, F>(&self, load: F, shield: &mut Self::RawShield<T>) -> TaggedCnt<T>
+    where
+        F: Fn(Ordering) -> TaggedCnt<T>,
+    {
+        let mut ptr = load(Ordering::Relaxed);
         loop {
             shield.ptr = ptr;
             shield.hazptr.protect_raw(ptr.as_raw());
             membarrier::light_membarrier();
 
-            let new_ptr = link.load(Ordering::Acquire);
+            let new_ptr = load(Ordering::Acquire);
             if new_ptr == ptr {
                 break ptr;
             }
             ptr = new_ptr;
         }
+    }
+
+    #[inline]
+    fn weak_acquire<T>(&self, ptr: TaggedCnt<T>) -> *mut Self::WeakGuard<T> {
+        let thread = unsafe { self.thread.as_ref() }.unwrap();
+        let mut hazptr = HazardPointer::new(thread);
+        hazptr.protect_raw(ptr.as_raw());
+        membarrier::light_membarrier();
+        Box::into_raw(Box::new(WeakGuardHP(AcquiredHP { hazptr, ptr })))
+    }
+
+    #[inline]
+    unsafe fn own_weak_guard<T>(ptr: *mut Self::WeakGuard<T>) -> Self::WeakGuard<T> {
+        *Box::from_raw(ptr)
     }
 
     #[inline]

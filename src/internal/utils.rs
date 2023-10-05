@@ -8,6 +8,8 @@ use std::{
 
 use crate::Cs;
 
+pub const MSB: usize = 1 << (usize::BITS - 1);
+
 /// An instance of an object of type T with an atomic reference count.
 pub struct RcInner<T> {
     storage: ManuallyDrop<T>,
@@ -157,19 +159,26 @@ impl<T> Tagged<T> {
         (ptr & !low_bits::<T>()) as *mut T
     }
 
+    pub fn as_usize(&self) -> usize {
+        self.ptr as usize
+    }
+
     pub fn with_tag(&self, tag: usize) -> Self {
         Self::new(with_tag(self.ptr, tag))
     }
 
     pub unsafe fn deref<'g>(&self) -> &'g T {
+        debug_assert!(!self.msb());
         &*self.as_raw()
     }
 
     pub unsafe fn deref_mut<'g>(&mut self) -> &'g mut T {
+        debug_assert!(!self.msb());
         &mut *self.as_raw()
     }
 
     pub unsafe fn as_ref<'g>(&self) -> Option<&'g T> {
+        debug_assert!(!self.msb());
         if self.is_null() {
             None
         } else {
@@ -178,11 +187,16 @@ impl<T> Tagged<T> {
     }
 
     pub unsafe fn as_mut<'g>(&mut self) -> Option<&'g mut T> {
+        debug_assert!(!self.msb());
         if self.is_null() {
             None
         } else {
             Some(self.deref_mut())
         }
+    }
+
+    pub fn msb(&self) -> bool {
+        self.ptr as usize & MSB != 0
     }
 }
 

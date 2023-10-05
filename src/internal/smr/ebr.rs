@@ -4,6 +4,7 @@ use atomic::Ordering;
 
 use crate::internal::utils::RcInner;
 use crate::internal::{Acquired, Cs, TaggedCnt};
+use crate::Validatable;
 
 /// A tagged pointer which is pointing a `CountedObjPtr<T>`.
 ///
@@ -54,6 +55,18 @@ impl<T> Acquired<T> for AcquiredEBR<T> {
     }
 }
 
+pub struct WeakGuardEBR<T>(TaggedCnt<T>);
+
+impl<T> Validatable<T> for WeakGuardEBR<T> {
+    fn validate(&self) -> bool {
+        true
+    }
+
+    fn ptr(&self) -> TaggedCnt<T> {
+        self.0
+    }
+}
+
 pub struct CsEBR {
     guard: Option<crossbeam::epoch::Guard>,
 }
@@ -67,6 +80,7 @@ impl From<crossbeam::epoch::Guard> for CsEBR {
 
 impl Cs for CsEBR {
     type RawShield<T> = AcquiredEBR<T>;
+    type WeakGuard<T> = WeakGuardEBR<T>;
 
     #[inline(always)]
     fn new() -> Self {
@@ -95,14 +109,23 @@ impl Cs for CsEBR {
     }
 
     #[inline(always)]
-    fn acquire<T>(
-        &self,
-        link: &atomic::Atomic<TaggedCnt<T>>,
-        shield: &mut Self::RawShield<T>,
-    ) -> TaggedCnt<T> {
-        let ptr = link.load(Ordering::Acquire);
+    fn acquire<T, F>(&self, load: F, shield: &mut Self::RawShield<T>) -> TaggedCnt<T>
+    where
+        F: Fn(Ordering) -> TaggedCnt<T>,
+    {
+        let ptr = load(Ordering::Acquire);
         *shield = AcquiredEBR(ptr);
         ptr
+    }
+
+    #[inline]
+    fn weak_acquire<T>(&self, ptr: TaggedCnt<T>) -> *mut Self::WeakGuard<T> {
+        Box::into_raw(Box::new(WeakGuardEBR(ptr)))
+    }
+
+    #[inline]
+    unsafe fn own_weak_guard<T>(ptr: *mut Self::WeakGuard<T>) -> Self::WeakGuard<T> {
+        *Box::from_raw(ptr)
     }
 
     #[inline(always)]

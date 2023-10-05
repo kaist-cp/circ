@@ -1,4 +1,4 @@
-use atomic::Atomic;
+use atomic::Ordering;
 
 use crate::internal::utils::{RcInner, TaggedCnt};
 
@@ -21,6 +21,11 @@ pub trait Acquired<T> {
     unsafe fn copy_to(&self, other: &mut Self);
 }
 
+pub trait Validatable<T> {
+    fn validate(&self) -> bool;
+    fn ptr(&self) -> TaggedCnt<T>;
+}
+
 /// A SMR-specific critical section manager trait.
 ///
 /// We construct this `Cs` right before starting an operation,
@@ -30,6 +35,7 @@ pub trait Cs {
     ///
     /// For more information, read a comment on `Acquired<T>`.
     type RawShield<T>: Acquired<T>;
+    type WeakGuard<T>: Validatable<T>;
 
     fn new() -> Self;
     unsafe fn unprotected() -> Self;
@@ -38,11 +44,11 @@ pub trait Cs {
     /// Creates a shield for the given pointer, assuming that `ptr` is already protected by a
     /// reference count.
     fn reserve<T>(&self, ptr: TaggedCnt<T>, shield: &mut Self::RawShield<T>);
-    fn acquire<T>(
-        &self,
-        link: &Atomic<TaggedCnt<T>>,
-        shield: &mut Self::RawShield<T>,
-    ) -> TaggedCnt<T>;
+    fn acquire<T, F>(&self, load: F, shield: &mut Self::RawShield<T>) -> TaggedCnt<T>
+    where
+        F: Fn(Ordering) -> TaggedCnt<T>;
+    fn weak_acquire<T>(&self, ptr: TaggedCnt<T>) -> *mut Self::WeakGuard<T>;
+    unsafe fn own_weak_guard<T>(ptr: *mut Self::WeakGuard<T>) -> Self::WeakGuard<T>;
     unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
         F: FnOnce(&mut RcInner<T>);
