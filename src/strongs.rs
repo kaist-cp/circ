@@ -129,20 +129,20 @@ impl<T, C: Cs> AtomicRc<T, C> {
     pub fn compare_exchange_loaned<'g>(
         &self,
         expected: TaggedCnt<T>,
-        desired: &Snapshot<T, C>,
+        desired_marked: TaggedSnapshot<T, C>,
         repay_with: &Self,
         success: Ordering,
         failure: Ordering,
         cs: &'g C,
     ) -> Result<Rc<T, C>, TaggedCnt<T>> {
         debug_assert!(!expected.msb());
-        let loan = Rc::from_raw(desired.as_ptr());
+        let loan = Rc::from_raw(desired_marked.inner.with_tag(0).as_ptr());
         match self.compare_exchange(expected, loan, success, failure, cs) {
             Ok(q) => {
-                let weak_guard = cs.weak_acquire(desired.as_ptr()) as usize | MSB;
+                let weak_guard = cs.weak_acquire(desired_marked.as_ptr()) as usize | MSB;
                 let link = unsafe { &*(&repay_with.link as *const _ as *const AtomicUsize) };
                 link.compare_exchange(
-                    desired.as_ptr().as_usize(),
+                    desired_marked.as_ptr().as_usize(),
                     weak_guard,
                     Ordering::SeqCst,
                     Ordering::SeqCst,
