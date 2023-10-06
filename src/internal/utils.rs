@@ -8,7 +8,11 @@ use std::{
 
 use crate::Cs;
 
+/// A bit to distinguish a RcInner pointer from a WeakGuard pointer.
+#[cfg(not(sanitize = "address"))]
 pub const MSB: usize = 1 << (usize::BITS - 1);
+#[cfg(sanitize = "address")]
+pub const MSB: usize = 1 << 2;
 
 /// An instance of an object of type T with an atomic reference count.
 pub struct RcInner<T> {

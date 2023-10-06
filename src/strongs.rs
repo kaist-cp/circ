@@ -12,11 +12,27 @@ use crate::{Acquired, AtomicWeak, Cs, Pointer, Tagged, TaggedCnt, Validatable, W
 /// A result of unsuccessful `compare_exchange`.
 ///
 /// It returns the ownership of [`Rc`] pointer which was given as a parameter.
-pub struct CompareExchangeErrorRc<T, P> {
-    /// The `desired` which was given as a parameter of `compare_exchange`.
-    pub desired: P,
-    /// The current pointer value inside the atomic pointer.
-    pub current: TaggedCnt<T>,
+pub enum CompareExchangeErrorRc<T, P> {
+    Changed {
+        /// The `desired` which was given as a parameter of `compare_exchange`.
+        desired: P,
+        /// The current pointer value inside the atomic pointer.
+        current: TaggedCnt<T>,
+    },
+    Closed {
+        /// The `desired` which was given as a parameter of `compare_exchange`.
+        desired: P,
+    },
+}
+
+impl<T, P> CompareExchangeErrorRc<T, P> {
+    #[inline]
+    pub fn desired(self) -> P {
+        match self {
+            CompareExchangeErrorRc::Changed { desired, .. }
+            | CompareExchangeErrorRc::Closed { desired } => desired,
+        }
+    }
 }
 
 pub struct AtomicRc<T, C: Cs> {
@@ -121,39 +137,11 @@ impl<T, C: Cs> AtomicRc<T, C> {
                 desired.into_ref_count();
                 Ok(rc)
             }
-            Err(current) => Err(CompareExchangeErrorRc { desired, current }),
-        }
-    }
-
-    #[inline]
-    pub fn compare_exchange_loaned<'g>(
-        &self,
-        expected: TaggedCnt<T>,
-        desired_marked: TaggedSnapshot<T, C>,
-        repay_with: &Self,
-        success: Ordering,
-        failure: Ordering,
-        cs: &'g C,
-    ) -> Result<Rc<T, C>, TaggedCnt<T>> {
-        debug_assert!(!expected.msb());
-        let loan = Rc::from_raw(desired_marked.inner.with_tag(0).as_ptr());
-        match self.compare_exchange(expected, loan, success, failure, cs) {
-            Ok(q) => {
-                let weak_guard = cs.weak_acquire(desired_marked.as_ptr()) as usize | MSB;
-                let link = unsafe { &*(&repay_with.link as *const _ as *const AtomicUsize) };
-                link.compare_exchange(
-                    desired_marked.as_ptr().as_usize(),
-                    weak_guard,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                )
-                .unwrap();
-                Ok(q)
-            }
-            Err(e) => {
-                forget(e.desired);
-                Err(e.current)
-            }
+            Err(current) => Err(if current.msb() {
+                CompareExchangeErrorRc::Closed { desired }
+            } else {
+                CompareExchangeErrorRc::Changed { desired, current }
+            }),
         }
     }
 
@@ -176,7 +164,11 @@ impl<T, C: Cs> AtomicRc<T, C> {
             .compare_exchange(expected.as_ptr(), desired, success, failure)
         {
             Ok(current) => Ok(current),
-            Err(current) => Err(CompareExchangeErrorRc { desired, current }),
+            Err(current) => Err(if current.msb() {
+                CompareExchangeErrorRc::Closed { desired }
+            } else {
+                CompareExchangeErrorRc::Changed { desired, current }
+            }),
         }
     }
 
@@ -203,18 +195,29 @@ impl<T, C: Cs> AtomicRc<T, C> {
         loop {
             current_snap.load(self, cs);
             if current_snap.as_ptr() != expected {
-                return Err(CompareExchangeErrorRc {
-                    desired,
-                    current: current_snap.as_ptr(),
+                return Err(if current_snap.as_ptr().msb() {
+                    CompareExchangeErrorRc::Closed { desired }
+                } else {
+                    CompareExchangeErrorRc::Changed {
+                        desired,
+                        current: current_snap.as_ptr(),
+                    }
                 });
             }
             match self.compare_exchange(expected, desired, success, failure, cs) {
                 Ok(rc) => return Ok(rc),
                 Err(e) => {
-                    if e.current == current_snap.as_ptr() {
-                        return Err(e);
-                    } else {
-                        desired = e.desired;
+                    desired = match e {
+                        CompareExchangeErrorRc::Changed { desired, current } => {
+                            if current == current_snap.as_ptr() {
+                                return Err(CompareExchangeErrorRc::Changed { desired, current });
+                            } else {
+                                desired
+                            }
+                        }
+                        CompareExchangeErrorRc::Closed { desired } => {
+                            return Err(CompareExchangeErrorRc::Closed { desired })
+                        }
                     }
                 }
             }
@@ -480,6 +483,12 @@ impl<T, C: Cs> Snapshot<T, C> {
     pub unsafe fn copy_to(&self, other: &mut Self) {
         self.acquired.copy_to(&mut other.acquired);
     }
+
+    #[inline]
+    pub fn loan(&self) -> (Rc<T, C>, Debt<T>) {
+        let ptr = self.acquired.as_ptr();
+        (Rc::from_raw(ptr), Debt { ptr })
+    }
 }
 
 impl<T, C: Cs> Default for Snapshot<T, C> {
@@ -534,6 +543,43 @@ impl<'s, T, C: Cs> Pointer<T> for TaggedSnapshot<'s, T, C> {
     #[inline]
     fn as_ptr(&self) -> TaggedCnt<T> {
         self.inner.acquired.as_ptr().with_tag(self.tag)
+    }
+}
+
+pub struct Debt<T> {
+    ptr: TaggedCnt<T>,
+}
+
+impl<T> Drop for Debt<T> {
+    #[inline]
+    fn drop(&mut self) {
+        panic!("Debt is not repaied!");
+    }
+}
+
+impl<T> Debt<T> {
+    #[inline]
+    pub fn repay<C: Cs>(self, rc: Rc<T, C>) {
+        assert!(self.ptr == rc.ptr);
+        forget(self);
+        forget(rc);
+    }
+
+    #[inline]
+    pub fn repay_frontier<C: Cs>(self, link: &AtomicRc<T, C>, tag: usize, cs: &C) {
+        let ptr = self.ptr.with_tag(tag);
+        forget(self);
+
+        let weak_guard = cs.weak_acquire(ptr) as usize | MSB;
+        let inner = unsafe { &*(&link.link as *const _ as *const AtomicUsize) };
+        inner
+            .compare_exchange(
+                ptr.as_usize(),
+                weak_guard,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .unwrap();
     }
 }
 
