@@ -83,6 +83,13 @@ impl<T, C: Cs> AtomicRc<T, C> {
     }
 
     #[inline]
+    pub fn load_ss(&self, cs: &C) -> Snapshot<T, C> {
+        let mut result = Snapshot::new();
+        result.load(self, cs);
+        result
+    }
+
+    #[inline]
     pub fn store<P: StrongPtr<T, C>>(&self, ptr: P, order: Ordering, cs: &C) {
         let new_ptr = ptr.as_ptr();
         ptr.into_ref_count();
