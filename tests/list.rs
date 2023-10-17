@@ -2,7 +2,6 @@ use atomic::Ordering;
 use circ::{AtomicRc, Cs, Pointer, Rc, Snapshot, StrongPtr, TaggedCnt};
 
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::mem::swap;
 
 /// Some or executing the given expression.
 macro_rules! some_or {
@@ -108,14 +107,14 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
             if self.next.tag() != 0 {
                 // We add a 0 tag here so that `self.curr`s tag is always 0.
                 self.next.set_tag(0);
-                swap(&mut self.next, &mut self.curr);
+                Snapshot::swap(&mut self.next, &mut self.curr);
                 continue;
             }
 
             match curr_node.key.cmp(key) {
                 Less => {
-                    swap(&mut self.prev, &mut self.curr);
-                    swap(&mut self.curr, &mut self.next);
+                    Snapshot::swap(&mut self.prev, &mut self.curr);
+                    Snapshot::swap(&mut self.curr, &mut self.next);
                     self.prev_next = self.curr.as_ptr();
                 }
                 Equal => break true,
@@ -162,7 +161,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
             cs,
         ) {
             Ok(_) => Ok(()),
-            Err(e) => Err(e.desired),
+            Err(e) => Err(e.desired()),
         }
     }
 

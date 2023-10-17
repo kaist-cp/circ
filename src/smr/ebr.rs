@@ -55,6 +55,14 @@ impl<T> Acquired<T> for AcquiredEBR<T> {
     }
 }
 
+impl<T> Clone for AcquiredEBR<T> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
+}
+
+impl<T> Copy for AcquiredEBR<T> {}
+
 pub struct WeakGuardEBR<T>(TaggedCnt<T>);
 
 impl<T> Validatable<T> for WeakGuardEBR<T> {

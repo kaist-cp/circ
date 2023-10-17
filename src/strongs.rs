@@ -415,6 +415,19 @@ pub struct Snapshot<T, C: Cs> {
     acquired: C::RawShield<T>,
 }
 
+impl<T, C: Cs> Clone for Snapshot<T, C>
+where
+    C::RawShield<T>: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            acquired: self.acquired.clone(),
+        }
+    }
+}
+
+impl<T, C: Cs> Copy for Snapshot<T, C> where C::RawShield<T>: Copy {}
+
 impl<T, C: Cs> Snapshot<T, C> {
     #[inline(always)]
     pub fn new() -> Self {
@@ -502,13 +515,6 @@ impl<T, C: Cs> Default for Snapshot<T, C> {
     #[inline]
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl<T, C: Cs> Drop for Snapshot<T, C> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        self.acquired.clear();
     }
 }
 
