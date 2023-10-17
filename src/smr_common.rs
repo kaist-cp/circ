@@ -1,6 +1,6 @@
 use atomic::Ordering;
 
-use crate::internal::utils::{RcInner, TaggedCnt};
+use crate::{RcInner, TaggedCnt};
 
 /// A SMR-specific acquired pointer trait.
 ///

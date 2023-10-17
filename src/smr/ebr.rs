@@ -2,9 +2,9 @@ use std::mem;
 
 use atomic::Ordering;
 
-use crate::internal::utils::RcInner;
-use crate::internal::{Acquired, Cs, TaggedCnt};
+use crate::utils::RcInner;
 use crate::Validatable;
+use crate::{Acquired, Cs, TaggedCnt};
 
 /// A tagged pointer which is pointing a `CountedObjPtr<T>`.
 ///
