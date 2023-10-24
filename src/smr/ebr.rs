@@ -1,6 +1,7 @@
 use std::mem;
 
 use atomic::Ordering;
+use crossbeam::epoch::{default_collector, pin, Epoch, Guard};
 
 use crate::utils::RcInner;
 use crate::Validatable;
@@ -63,25 +64,28 @@ impl<T> Clone for AcquiredEBR<T> {
 
 impl<T> Copy for AcquiredEBR<T> {}
 
-pub struct WeakGuardEBR<T>(TaggedCnt<T>);
+pub struct WeakGuardEBR<T> {
+    ptr: TaggedCnt<T>,
+    epoch: Epoch,
+}
 
 impl<T> Validatable<T> for WeakGuardEBR<T> {
     fn validate(&self) -> bool {
-        true
+        default_collector().global_epoch().wrapping_sub(self.epoch) < 2
     }
 
     fn ptr(&self) -> TaggedCnt<T> {
-        self.0
+        self.ptr
     }
 }
 
 pub struct CsEBR {
-    guard: Option<crossbeam::epoch::Guard>,
+    guard: Option<Guard>,
 }
 
-impl From<crossbeam::epoch::Guard> for CsEBR {
+impl From<Guard> for CsEBR {
     #[inline(always)]
-    fn from(guard: crossbeam::epoch::Guard) -> Self {
+    fn from(guard: Guard) -> Self {
         Self { guard: Some(guard) }
     }
 }
@@ -92,7 +96,7 @@ impl Cs for CsEBR {
 
     #[inline(always)]
     fn new() -> Self {
-        Self::from(crossbeam::epoch::pin())
+        Self::from(pin())
     }
 
     #[inline]
@@ -128,7 +132,12 @@ impl Cs for CsEBR {
 
     #[inline]
     fn weak_acquire<T>(&self, ptr: TaggedCnt<T>) -> *mut Self::WeakGuard<T> {
-        Box::into_raw(Box::new(WeakGuardEBR(ptr)))
+        let epoch = self
+            .guard
+            .as_ref()
+            .map(|guard| guard.local_epoch())
+            .unwrap();
+        Box::into_raw(Box::new(WeakGuardEBR { ptr, epoch }))
     }
 
     #[inline]

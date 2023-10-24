@@ -74,7 +74,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
     #[inline]
     pub fn load(&self, order: Ordering) -> TaggedCnt<T> {
         let ptr = self.link.load(order);
-        if !ptr.msb() {
+        if core::intrinsics::likely(!ptr.msb()) {
             return ptr;
         }
         let weak_guard = unsafe { &*((ptr.as_usize() ^ MSB) as *mut C::WeakGuard<T>) };
