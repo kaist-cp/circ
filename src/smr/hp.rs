@@ -138,8 +138,15 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    unsafe fn own_weak_guard<T>(ptr: *mut Self::WeakGuard<T>) -> Self::WeakGuard<T> {
-        *Box::from_raw(ptr)
+    unsafe fn dispose_weak_guard<T>(&self, ptr: *mut Self::WeakGuard<T>) {
+        let guard = *Box::from_raw(ptr);
+        let hazptr = guard.0.hazptr;
+        let thread = self.thread.as_ref().unwrap();
+        if thread.record == hazptr.owner_record() {
+            drop(hazptr);
+        } else {
+            hazptr.deliver_to_owner();
+        }
     }
 
     #[inline]

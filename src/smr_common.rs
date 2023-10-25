@@ -48,7 +48,7 @@ pub trait Cs {
     where
         F: Fn(Ordering) -> TaggedCnt<T>;
     fn weak_acquire<T>(&self, ptr: TaggedCnt<T>) -> *mut Self::WeakGuard<T>;
-    unsafe fn own_weak_guard<T>(ptr: *mut Self::WeakGuard<T>) -> Self::WeakGuard<T>;
+    unsafe fn dispose_weak_guard<T>(&self, ptr: *mut Self::WeakGuard<T>);
     unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
         F: FnOnce(&mut RcInner<T>);

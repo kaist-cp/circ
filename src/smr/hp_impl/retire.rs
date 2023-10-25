@@ -63,17 +63,17 @@ impl Retired {
 }
 
 #[derive(Debug)]
-pub(crate) struct RetiredList {
-    head: AtomicPtr<RetiredListNode>,
+pub(crate) struct Pile<T> {
+    head: AtomicPtr<PileNode<T>>,
 }
 
 #[derive(Debug)]
-struct RetiredListNode {
-    retireds: Vec<Retired>,
-    next: *const RetiredListNode,
+struct PileNode<T> {
+    item: T,
+    next: *const Self,
 }
 
-impl RetiredList {
+impl<T> Pile<T> {
     pub(crate) const fn new() -> Self {
         Self {
             head: AtomicPtr::new(core::ptr::null_mut()),
@@ -84,9 +84,9 @@ impl RetiredList {
         self.head.load(Ordering::Acquire).is_null()
     }
 
-    pub(crate) fn push(&self, retireds: Vec<Retired>) {
-        let new = Box::leak(Box::new(RetiredListNode {
-            retireds,
+    pub(crate) fn push(&self, item: T) {
+        let new = Box::leak(Box::new(PileNode {
+            item,
             next: ptr::null_mut(),
         }));
 
@@ -103,14 +103,27 @@ impl RetiredList {
         }
     }
 
-    pub(crate) fn pop_all(&self) -> Vec<Retired> {
+    pub(crate) fn pop_all(&self) -> Vec<T> {
         let mut cur = self.head.swap(core::ptr::null_mut(), Ordering::Acquire);
-        let mut retireds = Vec::new();
+        let mut popped = Vec::new();
         while !cur.is_null() {
-            let mut cur_box = unsafe { Box::from_raw(cur) };
-            retireds.append(&mut cur_box.retireds);
+            let cur_box = unsafe { Box::from_raw(cur) };
+            popped.push(cur_box.item);
             cur = cur_box.next.cast_mut();
         }
-        retireds
+        popped
+    }
+}
+
+impl<T> Pile<Vec<T>> {
+    pub(crate) fn pop_all_flatten(&self) -> Vec<T> {
+        let mut cur = self.head.swap(core::ptr::null_mut(), Ordering::Acquire);
+        let mut popped = Vec::new();
+        while !cur.is_null() {
+            let mut cur_box = unsafe { Box::from_raw(cur) };
+            popped.append(&mut cur_box.item);
+            cur = cur_box.next.cast_mut();
+        }
+        popped
     }
 }

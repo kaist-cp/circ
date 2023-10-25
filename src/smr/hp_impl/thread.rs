@@ -1,16 +1,14 @@
-use core::ptr;
+use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use std::cell::{Cell, RefCell};
 
 use super::domain::Domain;
 use super::hazard::ThreadRecord;
-use super::retire::Retired;
+use super::retire::{Pile, Retired};
 
 pub struct Thread {
     pub(crate) domain: *const Domain,
-    pub(crate) hazards: *const ThreadRecord,
-    /// available slots of hazard array
-    pub(crate) available_indices: RefCell<Vec<usize>>,
+    pub(crate) record: *const ThreadRecord,
     pub(crate) retired: RefCell<Vec<Retired>>,
     pub(crate) count: Cell<usize>,
     pub(crate) in_recl: Cell<bool>,
@@ -19,11 +17,10 @@ pub struct Thread {
 
 impl Thread {
     pub fn new(domain: &Domain) -> Self {
-        let (thread, available_indices) = domain.threads.acquire();
+        let record = domain.threads.acquire();
         Self {
             domain,
-            hazards: thread,
-            available_indices: RefCell::new(available_indices),
+            record,
             retired: RefCell::new(Vec::new()),
             count: Cell::new(0),
             in_recl: Cell::new(false),
@@ -96,7 +93,7 @@ impl Thread {
 
     #[inline]
     pub(crate) fn do_reclamation_inner(&self) {
-        let retireds = self.domain().retireds.pop_all();
+        let retireds = self.domain().retireds.pop_all_flatten();
         let retireds_len = retireds.len();
         if retireds.is_empty() {
             return;
@@ -125,20 +122,41 @@ impl Thread {
 
 // stuff related to hazards
 impl Thread {
+    fn available_indices(&self) -> &RefCell<Vec<usize>> {
+        &unsafe { &*self.record }.available_indices
+    }
+
+    fn returned_hazptrs(&self) -> &Pile<usize> {
+        &unsafe { &*self.record }.returned_hazptrs
+    }
+
     /// acquire hazard slot
     #[inline(always)]
     pub(crate) fn acquire(&self) -> usize {
-        let idx = self.available_indices.borrow_mut().pop();
+        let idx = self.available_indices().borrow_mut().pop();
         if let Some(idx) = idx {
-            idx
-        } else {
-            self.grow_array();
-            self.acquire()
+            return idx;
         }
+
+        let mut delivered = self.returned_hazptrs().pop_all();
+        if !delivered.is_empty() {
+            unsafe {
+                let slots = &*(*self.record).hazptrs.load(Ordering::Acquire);
+                for i in &delivered {
+                    slots.get_unchecked(*i).store(null_mut(), Ordering::Release);
+                }
+            }
+            let mut available_indices = self.available_indices().borrow_mut();
+            available_indices.append(&mut delivered);
+            return available_indices.pop().unwrap();
+        }
+
+        self.grow_array();
+        self.acquire()
     }
 
     fn grow_array(&self) {
-        let array_ptr = unsafe { &*self.hazards }.hazptrs.load(Ordering::Relaxed);
+        let array_ptr = unsafe { &*self.record }.hazptrs.load(Ordering::Relaxed);
         let array = unsafe { &*array_ptr };
         let size = array.len();
         let new_size = size * 2;
@@ -147,18 +165,13 @@ impl Thread {
             new_array.push(AtomicPtr::new(array[i].load(Ordering::Relaxed)));
         }
         for _ in size..new_size {
-            new_array.push(AtomicPtr::new(ptr::null_mut()));
+            new_array.push(AtomicPtr::new(null_mut()));
         }
-        unsafe { &*self.hazards }
+        unsafe { &*self.record }
             .hazptrs
             .store(Box::into_raw(new_array), Ordering::Release);
         unsafe { self.retire(array_ptr) };
-        self.available_indices.borrow_mut().extend(size..new_size)
-    }
-
-    /// release hazard slot
-    pub(crate) fn release(&mut self, idx: usize) {
-        self.available_indices.borrow_mut().push(idx);
+        self.available_indices().borrow_mut().extend(size..new_size)
     }
 }
 
@@ -167,9 +180,6 @@ impl Drop for Thread {
         self.flush_retireds();
         membarrier::heavy();
         assert!(self.retired.borrow().is_empty());
-        // WARNING: Dropping HazardPointer touches available_indices. So available_indices MUST be
-        // dropped after hps. For the same reason, Thread::drop MUST NOT acquire HazardPointer.
-        self.available_indices.borrow_mut().clear();
-        self.domain().threads.release(unsafe { &*self.hazards });
+        self.domain().threads.release(unsafe { &*self.record });
     }
 }

@@ -74,7 +74,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
     #[inline]
     pub fn load(&self, order: Ordering) -> TaggedCnt<T> {
         let ptr = self.link.load(order);
-        if core::intrinsics::likely(!ptr.msb()) {
+        if !ptr.msb() {
             return ptr;
         }
         let weak_guard = unsafe { &*((ptr.as_usize() ^ MSB) as *mut C::WeakGuard<T>) };
@@ -258,15 +258,13 @@ impl<T, C: Cs> AtomicRc<T, C> {
 impl<T, C: Cs> Drop for AtomicRc<T, C> {
     #[inline(always)]
     fn drop(&mut self) {
+        let cs = &C::new();
         unsafe {
             let ptr = self.link.load(Ordering::Relaxed);
             if ptr.msb() {
-                drop(C::own_weak_guard(
-                    (ptr.as_usize() ^ MSB) as *mut C::WeakGuard<T>,
-                ));
+                cs.dispose_weak_guard((ptr.as_usize() ^ MSB) as *mut C::WeakGuard<T>);
             } else {
                 if let Some(cnt) = ptr.as_raw().as_mut() {
-                    let cs = &C::new();
                     cnt.decrement_strong(Some(cs));
                 }
             }
