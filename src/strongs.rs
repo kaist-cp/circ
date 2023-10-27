@@ -91,11 +91,14 @@ impl<T, C: Cs> AtomicRc<T, C> {
 
     #[inline]
     pub fn store<P: StrongPtr<T, C>>(&self, ptr: P, order: Ordering, cs: &C) {
+        let ptr = ptr.into_rc();
         let new_ptr = ptr.as_ptr();
-        ptr.into_ref_count();
         let old_ptr = self.link.swap(new_ptr, order);
         debug_assert!(!old_ptr.msb());
+        // Skip decrementing a strong count of the inserted pointer.
+        forget(ptr);
         unsafe {
+            // Did not use `Rc::drop`, to reuse the given `cs`.
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
                 cnt.decrement_strong(Some(cs));
             }
@@ -117,31 +120,27 @@ impl<T, C: Cs> AtomicRc<T, C> {
     /// the same managed object, replaces the current pointer with a copy of desired
     /// (incrementing its reference count) and returns true. Otherwise, returns false.
     #[inline(always)]
-    pub fn compare_exchange<'g, P>(
+    pub fn compare_exchange<P>(
         &self,
         expected: TaggedCnt<T>,
         desired: P,
         success: Ordering,
         failure: Ordering,
-        _: &'g C,
-    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, P>>
+        _: &C,
+    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>>
     where
         P: StrongPtr<T, C>,
     {
         debug_assert!(!expected.msb());
+        let desired = desired.into_rc();
         match self
             .link
             .compare_exchange(expected, desired.as_ptr(), success, failure)
         {
             Ok(_) => {
+                // Skip decrementing a strong count of the inserted pointer.
+                forget(desired);
                 let rc = Rc::from_raw(expected);
-                // Here, `into_ref_count` increment the reference count of `desired` only if `desired`
-                // doesn't own a reference counter.
-                //
-                // If `desired` is `Rc`, semantically the ownership of the reference count from
-                // `desired` is moved to `self`. Because of this reason, we must skip decrementing
-                // the reference count of `desired`.
-                desired.into_ref_count();
                 Ok(rc)
             }
             Err(current) => Err(if current.msb() {
@@ -153,13 +152,13 @@ impl<T, C: Cs> AtomicRc<T, C> {
     }
 
     #[inline]
-    pub fn compare_exchange_tag<'g, P>(
+    pub fn compare_exchange_tag<P>(
         &self,
         expected: P,
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
-        _: &'g C,
+        _: &C,
     ) -> Result<TaggedCnt<T>, CompareExchangeErrorRc<T, TaggedCnt<T>>>
     where
         P: StrongPtr<T, C>,
@@ -186,19 +185,20 @@ impl<T, C: Cs> AtomicRc<T, C> {
     /// It is guaranteed that the current pointer on a failure is protected by `current_snap`.
     /// It is lock-free but not wait-free. Use `compare_exchange` for an wait-free implementation.
     #[inline(always)]
-    pub fn compare_exchange_protecting_current<'g, P>(
+    pub fn compare_exchange_protecting_current<P>(
         &self,
         expected: TaggedCnt<T>,
-        mut desired: P,
+        desired: P,
         current_snap: &mut Snapshot<T, C>,
         success: Ordering,
         failure: Ordering,
-        cs: &'g C,
-    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, P>>
+        cs: &C,
+    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>>
     where
         P: StrongPtr<T, C>,
     {
         debug_assert!(!expected.msb());
+        let mut desired = desired.into_rc();
         loop {
             current_snap.load(self, cs);
             if current_snap.as_ptr() != expected {
@@ -597,28 +597,6 @@ impl<T> Debt<T> {
 pub trait StrongPtr<T, C: Cs>: Pointer<T> {
     const OWNS_REF_COUNT: bool;
 
-    /// Consumes the aquired pointer, incrementing the reference count if we didn't increment
-    /// it before.
-    ///
-    /// Semantically, it is equivalent to giving ownership of a reference count outside the
-    /// environment.
-    ///
-    /// For example, we do nothing but forget its ownership if the pointer is [`Rc`],
-    /// but increment the reference count if the pointer is [`Snapshot`].
-    #[inline]
-    fn into_ref_count(self)
-    where
-        Self: Sized,
-    {
-        if Self::OWNS_REF_COUNT {
-            // As we have a reference count already, we don't have to do anything, but
-            // prevent calling a destructor which decrements it.
-            forget(self);
-        } else if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            cnt.increment_strong();
-        }
-    }
-
     /// Consumes `self` and constructs a [`Rc`] pointing to the same object.
     ///
     /// If `self` is already [`Rc`], it will not touch the reference count.
@@ -629,7 +607,9 @@ pub trait StrongPtr<T, C: Cs>: Pointer<T> {
     {
         let rc = Rc::from_raw(self.as_ptr());
         if Self::OWNS_REF_COUNT {
-            self.into_ref_count();
+            // As we have a reference count already, we don't have to do anything, but
+            // prevent calling a destructor which decrements it.
+            forget(self);
         } else if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
             cnt.increment_strong();
         }
