@@ -120,19 +120,15 @@ impl<T, C: Cs> AtomicRc<T, C> {
     /// the same managed object, replaces the current pointer with a copy of desired
     /// (incrementing its reference count) and returns true. Otherwise, returns false.
     #[inline(always)]
-    pub fn compare_exchange<P>(
+    pub fn compare_exchange(
         &self,
         expected: TaggedCnt<T>,
-        desired: P,
+        desired: Rc<T, C>,
         success: Ordering,
         failure: Ordering,
         _: &C,
-    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>>
-    where
-        P: StrongPtr<T, C>,
-    {
+    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>> {
         debug_assert!(!expected.msb());
-        let desired = desired.into_rc();
         match self
             .link
             .compare_exchange(expected, desired.as_ptr(), success, failure)
@@ -157,19 +153,15 @@ impl<T, C: Cs> AtomicRc<T, C> {
     ///
     /// This function is allowed to spuriously fail even when the comparison succeeds.
     #[inline(always)]
-    pub fn compare_exchange_weak<P>(
+    pub fn compare_exchange_weak(
         &self,
         expected: TaggedCnt<T>,
-        desired: P,
+        desired: Rc<T, C>,
         success: Ordering,
         failure: Ordering,
         _: &C,
-    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>>
-    where
-        P: StrongPtr<T, C>,
-    {
+    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>> {
         debug_assert!(!expected.msb());
-        let desired = desired.into_rc();
         match self
             .link
             .compare_exchange_weak(expected, desired.as_ptr(), success, failure)
@@ -222,20 +214,16 @@ impl<T, C: Cs> AtomicRc<T, C> {
     /// It is guaranteed that the current pointer on a failure is protected by `current_snap`.
     /// It is lock-free but not wait-free. Use `compare_exchange` for an wait-free implementation.
     #[inline(always)]
-    pub fn compare_exchange_protecting_current<P>(
+    pub fn compare_exchange_protecting_current(
         &self,
         expected: TaggedCnt<T>,
-        desired: P,
+        mut desired: Rc<T, C>,
         current_snap: &mut Snapshot<T, C>,
         success: Ordering,
         failure: Ordering,
         cs: &C,
-    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>>
-    where
-        P: StrongPtr<T, C>,
-    {
+    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>> {
         debug_assert!(!expected.msb());
-        let mut desired = desired.into_rc();
         loop {
             current_snap.load(self, cs);
             if current_snap.as_ptr() != expected {
@@ -347,20 +335,6 @@ impl<T, C: Cs> Rc<T, C> {
             ptr,
             _marker: PhantomData,
         }
-    }
-
-    #[inline(always)]
-    pub fn from_snapshot<'g>(ptr: &Snapshot<T, C>) -> Self {
-        let rc = Self {
-            ptr: ptr.as_ptr(),
-            _marker: PhantomData,
-        };
-        unsafe {
-            if let Some(cnt) = rc.ptr.as_raw().as_ref() {
-                cnt.increment_strong();
-            }
-        }
-        rc
     }
 
     #[inline(always)]
@@ -516,6 +490,20 @@ impl<T, C: Cs> Snapshot<T, C> {
             }
         }
         true
+    }
+
+    #[inline]
+    pub fn upgrade(&self) -> Rc<T, C> {
+        let rc = Rc {
+            ptr: self.as_ptr(),
+            _marker: PhantomData,
+        };
+        unsafe {
+            if let Some(cnt) = rc.ptr.as_raw().as_ref() {
+                cnt.increment_strong();
+            }
+        }
+        rc
     }
 
     #[inline(always)]

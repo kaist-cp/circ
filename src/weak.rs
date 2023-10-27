@@ -7,7 +7,7 @@ use std::{
 use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
-use crate::{Cs, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt, TaggedSnapshot};
+use crate::{Cs, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -340,15 +340,6 @@ impl<T, C: Cs> WeakPtr<T, C> for Snapshot<T, C> {
 }
 
 impl<T, C: Cs> WeakPtr<T, C> for &Snapshot<T, C> {
-    #[inline]
-    fn into_weak_count(self) {
-        if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            cnt.increment_weak();
-        }
-    }
-}
-
-impl<'s, T, C: Cs> WeakPtr<T, C> for TaggedSnapshot<'s, T, C> {
     #[inline]
     fn into_weak_count(self) {
         if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
