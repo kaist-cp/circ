@@ -24,10 +24,10 @@ pub struct RcInner<T> {
 impl<T> RcInner<T> {
     pub const DESTRUCTED: u32 = 1 << (u32::BITS - 1);
 
-    pub(crate) fn new<const N: usize>(val: T) -> Self {
+    pub(crate) fn new(val: T, init_strong: u32) -> Self {
         Self {
             storage: ManuallyDrop::new(val),
-            strong: AtomicU32::new(N as u32),
+            strong: AtomicU32::new(init_strong),
             weak: AtomicU32::new(1),
         }
     }
@@ -48,6 +48,7 @@ impl<T> RcInner<T> {
         ManuallyDrop::into_inner(self.storage)
     }
 
+    #[inline]
     pub(crate) fn increment_strong(&self) -> bool {
         let val = self.strong.fetch_add(1, Ordering::SeqCst);
         if (val & Self::DESTRUCTED) != 0 {
@@ -61,16 +62,26 @@ impl<T> RcInner<T> {
         return true;
     }
 
-    pub(crate) unsafe fn decrement_strong<C: Cs>(&mut self, cs: Option<&C>) {
-        if self.strong.fetch_sub(1, Ordering::SeqCst) == 1 {
+    #[inline]
+    pub(crate) unsafe fn decrement_strong<C: Cs>(&mut self, count: u32, cs: Option<&C>) {
+        if self.strong.fetch_sub(count, Ordering::SeqCst) == count {
             if let Some(cs) = cs {
-                cs.defer(self, |inner| unsafe { inner.try_destruct::<C>() })
+                cs.defer(
+                    self,
+                    #[inline(always)]
+                    |inner| unsafe { inner.try_destruct::<C>() },
+                )
             } else {
-                C::new().defer(self, |inner| unsafe { inner.try_destruct::<C>() })
+                C::new().defer(
+                    self,
+                    #[inline(always)]
+                    |inner| unsafe { inner.try_destruct::<C>() },
+                )
             }
         }
     }
 
+    #[inline]
     pub(crate) unsafe fn try_destruct<C: Cs>(&mut self) {
         if self
             .strong
@@ -80,20 +91,23 @@ impl<T> RcInner<T> {
             self.dispose();
             self.decrement_weak::<C>();
         } else {
-            self.decrement_strong::<C>(None);
+            self.decrement_strong::<C>(1, None);
         }
     }
 
+    #[inline]
     pub(crate) fn increment_weak(&self) {
         self.weak.fetch_add(1, Ordering::SeqCst);
     }
 
+    #[inline]
     pub(crate) unsafe fn decrement_weak<C: Cs>(&mut self) {
         if self.weak.fetch_sub(1, Ordering::SeqCst) == 1 {
             drop(C::own_object(self));
         }
     }
 
+    #[inline]
     pub(crate) fn non_zero(&self) -> bool {
         let mut curr = self.strong.load(Ordering::SeqCst);
         if curr == 0 {
@@ -199,6 +213,7 @@ impl<T> Tagged<T> {
         }
     }
 
+    #[inline(always)]
     pub fn msb(&self) -> bool {
         self.ptr as usize & MSB != 0
     }

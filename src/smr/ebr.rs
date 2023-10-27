@@ -101,8 +101,8 @@ impl Cs for CsEBR {
     }
 
     #[inline(always)]
-    fn create_object<T, const N: usize>(obj: T) -> *mut RcInner<T> {
-        let obj = RcInner::new::<N>(obj);
+    fn create_object<T>(obj: T, init_strong: u32) -> *mut RcInner<T> {
+        let obj = RcInner::new(obj, init_strong);
         Box::into_raw(Box::new(obj))
     }
 
@@ -132,7 +132,7 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    unsafe fn dispose_weak_guard<T>(&self, ptr: *mut Self::WeakGuard<T>) {
+    unsafe fn dispose_weak_guard<T>(ptr: *mut Self::WeakGuard<T>) {
         drop(Box::from_raw(ptr))
     }
 

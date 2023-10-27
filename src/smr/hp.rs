@@ -92,8 +92,8 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    fn create_object<T, const N: usize>(obj: T) -> *mut crate::RcInner<T> {
-        let obj = RcInner::new::<N>(obj);
+    fn create_object<T>(obj: T, init_strong: u32) -> *mut crate::RcInner<T> {
+        let obj = RcInner::new(obj, init_strong);
         Box::into_raw(Box::new(obj))
     }
 
@@ -138,10 +138,10 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    unsafe fn dispose_weak_guard<T>(&self, ptr: *mut Self::WeakGuard<T>) {
+    unsafe fn dispose_weak_guard<T>(ptr: *mut Self::WeakGuard<T>) {
         let guard = *Box::from_raw(ptr);
         let hazptr = guard.0.hazptr;
-        let thread = self.thread.as_ref().unwrap();
+        let thread = &*DEFAULT_THREAD.with(|t| (&**t) as *const Thread);
         if thread.record == hazptr.owner_record() {
             drop(hazptr);
         } else {

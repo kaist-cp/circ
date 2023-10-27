@@ -100,7 +100,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
         unsafe {
             // Did not use `Rc::drop`, to reuse the given `cs`.
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                cnt.decrement_strong(Some(cs));
+                cnt.decrement_strong(1, Some(cs));
             }
         }
     }
@@ -274,7 +274,7 @@ impl<T, C: Cs> AtomicRc<T, C> {
             if cnt.strong.load(Ordering::Relaxed) == 1 {
                 return Some(C::own_object(ptr).into_inner());
             }
-            cnt.decrement_strong(Some(&C::unprotected()));
+            cnt.decrement_strong(1, Some(&C::unprotected()));
         }
         return None;
     }
@@ -283,14 +283,13 @@ impl<T, C: Cs> AtomicRc<T, C> {
 impl<T, C: Cs> Drop for AtomicRc<T, C> {
     #[inline(always)]
     fn drop(&mut self) {
-        let cs = &C::new();
         unsafe {
             let ptr = self.link.load(Ordering::Relaxed);
             if ptr.msb() {
-                cs.dispose_weak_guard((ptr.as_usize() ^ MSB) as *mut C::WeakGuard<T>);
+                C::dispose_weak_guard((ptr.as_usize() ^ MSB) as *mut C::WeakGuard<T>);
             } else {
                 if let Some(cnt) = ptr.as_raw().as_mut() {
-                    cnt.decrement_strong(Some(cs));
+                    cnt.decrement_strong(1, Some(&C::new()));
                 }
             }
         }
@@ -339,7 +338,7 @@ impl<T, C: Cs> Rc<T, C> {
 
     #[inline(always)]
     pub fn new(obj: T) -> Self {
-        let ptr = C::create_object::<_, 1>(obj);
+        let ptr = C::create_object(obj, 1);
         Self {
             ptr: TaggedCnt::new(ptr),
             _marker: PhantomData,
@@ -348,11 +347,21 @@ impl<T, C: Cs> Rc<T, C> {
 
     #[inline(always)]
     pub fn new_many<const N: usize>(obj: T) -> [Self; N] {
-        let ptr = C::create_object::<_, N>(obj);
+        let ptr = C::create_object(obj, N as _);
         [(); N].map(|_| Self {
             ptr: TaggedCnt::new(ptr),
             _marker: PhantomData,
         })
+    }
+
+    #[inline(always)]
+    pub fn new_many_iter(obj: T, count: usize) -> NewRcIter<T, C> {
+        let ptr = C::create_object(obj, count as _);
+        NewRcIter {
+            remain: count,
+            ptr: TaggedCnt::new(ptr),
+            _marker: PhantomData,
+        }
     }
 
     #[inline(always)]
@@ -397,9 +406,26 @@ impl<T, C: Cs> Rc<T, C> {
             if cnt.strong.load(Ordering::Relaxed) == 1 {
                 return Some(C::own_object(ptr).into_inner());
             }
-            cnt.decrement_strong(Some(&C::unprotected()));
+            cnt.decrement_strong(1, Some(&C::unprotected()));
         }
         return None;
+    }
+
+    #[inline]
+    pub unsafe fn into_inner_unchecked(self) -> T {
+        let ptr = self.ptr.as_raw();
+        forget(self);
+        C::own_object(ptr).into_inner()
+    }
+
+    #[inline]
+    pub fn finalize(self, cs: &C) {
+        unsafe {
+            if let Some(cnt) = self.ptr.as_raw().as_mut() {
+                cnt.decrement_strong(1, Some(cs));
+            }
+        }
+        forget(self);
     }
 }
 
@@ -415,7 +441,7 @@ impl<T, C: Cs> Drop for Rc<T, C> {
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                cnt.decrement_strong(Some(&C::new()));
+                cnt.decrement_strong(1, Some(&C::new()));
             }
         }
     }
@@ -425,6 +451,56 @@ impl<T, C: Cs> PartialEq for Rc<T, C> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.ptr == other.ptr
+    }
+}
+
+pub struct NewRcIter<T, C: Cs> {
+    remain: usize,
+    ptr: TaggedCnt<T>,
+    _marker: PhantomData<(T, *const C)>,
+}
+
+impl<T, C: Cs> Iterator for NewRcIter<T, C> {
+    type Item = Rc<T, C>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remain == 0 {
+            None
+        } else {
+            self.remain -= 1;
+            Some(Rc {
+                ptr: self.ptr,
+                _marker: PhantomData,
+            })
+        }
+    }
+}
+
+impl<T, C: Cs> NewRcIter<T, C> {
+    #[inline]
+    pub fn halt(mut self, cs: &C) {
+        if self.remain > 0 {
+            unsafe {
+                self.ptr
+                    .deref_mut()
+                    .decrement_strong(self.remain as _, Some(cs))
+            };
+        }
+        forget(self);
+    }
+}
+
+impl<T, C: Cs> Drop for NewRcIter<T, C> {
+    #[inline]
+    fn drop(&mut self) {
+        if self.remain > 0 {
+            unsafe {
+                self.ptr
+                    .deref_mut()
+                    .decrement_strong::<C>(self.remain as _, None)
+            };
+        }
     }
 }
 

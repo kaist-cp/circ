@@ -39,7 +39,7 @@ pub trait Cs {
 
     fn new() -> Self;
     unsafe fn unprotected() -> Self;
-    fn create_object<T, const N: usize>(obj: T) -> *mut RcInner<T>;
+    fn create_object<T>(obj: T, init_strong: u32) -> *mut RcInner<T>;
     unsafe fn own_object<T>(ptr: *mut RcInner<T>) -> RcInner<T>;
     /// Creates a shield for the given pointer, assuming that `ptr` is already protected by a
     /// reference count.
@@ -48,7 +48,7 @@ pub trait Cs {
     where
         F: Fn(Ordering) -> TaggedCnt<T>;
     fn weak_acquire<T>(&self, ptr: TaggedCnt<T>) -> *mut Self::WeakGuard<T>;
-    unsafe fn dispose_weak_guard<T>(&self, ptr: *mut Self::WeakGuard<T>);
+    unsafe fn dispose_weak_guard<T>(ptr: *mut Self::WeakGuard<T>);
     unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
         F: FnOnce(&mut RcInner<T>);
