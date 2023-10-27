@@ -101,8 +101,8 @@ impl Cs for CsEBR {
     }
 
     #[inline(always)]
-    fn create_object<T>(obj: T) -> *mut RcInner<T> {
-        let obj = RcInner::new(obj);
+    fn create_object<T, const N: usize>(obj: T) -> *mut RcInner<T> {
+        let obj = RcInner::new::<N>(obj);
         Box::into_raw(Box::new(obj))
     }
 

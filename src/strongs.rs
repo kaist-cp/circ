@@ -151,6 +151,43 @@ impl<T, C: Cs> AtomicRc<T, C> {
         }
     }
 
+    /// Atomically compares the underlying pointer with expected, and if they refer to
+    /// the same managed object, replaces the current pointer with a copy of desired
+    /// (incrementing its reference count) and returns true. Otherwise, returns false.
+    ///
+    /// This function is allowed to spuriously fail even when the comparison succeeds.
+    #[inline(always)]
+    pub fn compare_exchange_weak<P>(
+        &self,
+        expected: TaggedCnt<T>,
+        desired: P,
+        success: Ordering,
+        failure: Ordering,
+        _: &C,
+    ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>>
+    where
+        P: StrongPtr<T, C>,
+    {
+        debug_assert!(!expected.msb());
+        let desired = desired.into_rc();
+        match self
+            .link
+            .compare_exchange_weak(expected, desired.as_ptr(), success, failure)
+        {
+            Ok(_) => {
+                // Skip decrementing a strong count of the inserted pointer.
+                forget(desired);
+                let rc = Rc::from_raw(expected);
+                Ok(rc)
+            }
+            Err(current) => Err(if current.msb() {
+                CompareExchangeErrorRc::Closed { desired }
+            } else {
+                CompareExchangeErrorRc::Changed { desired, current }
+            }),
+        }
+    }
+
     #[inline]
     pub fn compare_exchange_tag<P>(
         &self,
@@ -328,11 +365,20 @@ impl<T, C: Cs> Rc<T, C> {
 
     #[inline(always)]
     pub fn new(obj: T) -> Self {
-        let ptr = C::create_object(obj);
+        let ptr = C::create_object::<_, 1>(obj);
         Self {
             ptr: TaggedCnt::new(ptr),
             _marker: PhantomData,
         }
+    }
+
+    #[inline(always)]
+    pub fn new_many<const N: usize>(obj: T) -> [Self; N] {
+        let ptr = C::create_object::<_, N>(obj);
+        [(); N].map(|_| Self {
+            ptr: TaggedCnt::new(ptr),
+            _marker: PhantomData,
+        })
     }
 
     #[inline(always)]

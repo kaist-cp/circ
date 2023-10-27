@@ -24,10 +24,10 @@ pub struct RcInner<T> {
 impl<T> RcInner<T> {
     pub const DESTRUCTED: u32 = 1 << (u32::BITS - 1);
 
-    pub(crate) fn new(val: T) -> Self {
+    pub(crate) fn new<const N: usize>(val: T) -> Self {
         Self {
             storage: ManuallyDrop::new(val),
-            strong: AtomicU32::new(1),
+            strong: AtomicU32::new(N as u32),
             weak: AtomicU32::new(1),
         }
     }
