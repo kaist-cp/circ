@@ -93,7 +93,7 @@ impl HazardPointer {
         pointer
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn swap(x: &mut HazardPointer, y: &mut HazardPointer) {
         mem::swap(&mut x.idx, &mut y.idx);
     }

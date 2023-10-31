@@ -602,7 +602,7 @@ impl<T, C: Cs> Snapshot<T, C> {
         self.acquired.clear();
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn swap(p1: &mut Self, p2: &mut Self) {
         <C::RawShield<T> as Acquired<T>>::swap(&mut p1.acquired, &mut p2.acquired)
     }

@@ -41,7 +41,7 @@ impl<T> Acquired<T> for AcquiredHP<T> {
         self.ptr.is_null()
     }
 
-    #[inline]
+    #[inline(always)]
     fn swap(p1: &mut Self, p2: &mut Self) {
         HazardPointer::swap(&mut p1.hazptr, &mut p2.hazptr);
         swap(&mut p1.ptr, &mut p2.ptr);
