@@ -12,3 +12,13 @@ pub use smr_common::*;
 pub use strongs::*;
 pub use utils::*;
 pub use weak::*;
+
+#[inline]
+pub fn set_counts_between_flush_ebr(counts: usize) {
+    crossbeam::epoch::set_bag_capacity(counts);
+}
+
+#[inline]
+pub fn set_counts_between_flush_hp(counts: usize) {
+    smr::hp_impl::set_counts_between_flush(counts);
+}

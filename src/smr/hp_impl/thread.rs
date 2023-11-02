@@ -6,6 +6,23 @@ use super::domain::Domain;
 use super::hazard::ThreadRecord;
 use super::retire::{Pile, Retired};
 
+pub static mut COUNTS_BETWEEN_FLUSH: usize = 64;
+
+#[inline]
+pub fn set_counts_between_flush(counts: usize) {
+    unsafe { COUNTS_BETWEEN_FLUSH = counts };
+}
+
+#[inline]
+pub fn counts_between_flush() -> usize {
+    unsafe { COUNTS_BETWEEN_FLUSH }
+}
+
+#[inline]
+pub fn counts_between_collect() -> usize {
+    unsafe { COUNTS_BETWEEN_FLUSH * 2 }
+}
+
 pub struct Thread {
     pub(crate) domain: *const Domain,
     pub(crate) record: *const ThreadRecord,
@@ -31,9 +48,6 @@ impl Thread {
 
 // stuff related to reclamation
 impl Thread {
-    const COUNTS_BETWEEN_FLUSH: usize = 64;
-    const COUNTS_BETWEEN_COLLECT: usize = 128;
-
     fn domain(&self) -> &Domain {
         unsafe { &*self.domain }
     }
@@ -61,11 +75,11 @@ impl Thread {
             .push(Retired::new(ptr as *mut _, f));
         let count = self.count.get().wrapping_add(1);
         self.count.set(count);
-        if count % Self::COUNTS_BETWEEN_FLUSH == 0 {
+        if count % counts_between_flush() == 0 {
             self.flush_retireds();
         }
         // TODO: collecting right after pushing is kinda weird
-        if count % Self::COUNTS_BETWEEN_COLLECT == 0 {
+        if count % counts_between_collect() == 0 {
             self.do_reclamation();
         }
     }

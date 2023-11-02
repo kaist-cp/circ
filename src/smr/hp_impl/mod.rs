@@ -4,6 +4,7 @@ mod retire;
 mod thread;
 
 pub use hazard::HazardPointer;
+pub use thread::set_counts_between_flush;
 
 use std::thread_local;
 
