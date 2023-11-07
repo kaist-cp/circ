@@ -1,30 +1,15 @@
 use core::mem;
-use std::{
-    hash::Hash,
-    mem::ManuallyDrop,
-    ptr::null_mut,
-    sync::atomic::{AtomicU32, Ordering},
-};
-
-use crate::Cs;
-
-/// A bit to distinguish a RcInner pointer from a WeakGuard pointer.
-#[cfg(not(sanitize = "address"))]
-pub const MSB: usize = 1 << (usize::BITS - 1);
-#[cfg(sanitize = "address")]
-pub const MSB: usize = 1 << 2;
+use std::{hash::Hash, mem::ManuallyDrop, ptr::null_mut, sync::atomic::AtomicU32};
 
 /// An instance of an object of type T with an atomic reference count.
 pub struct RcInner<T> {
-    storage: ManuallyDrop<T>,
-    pub(crate) strong: AtomicU32,
-    pub(crate) weak: AtomicU32,
+    pub storage: ManuallyDrop<T>,
+    pub strong: AtomicU32,
+    pub weak: AtomicU32,
 }
 
 impl<T> RcInner<T> {
-    pub const DESTRUCTED: u32 = 1 << (u32::BITS - 1);
-
-    pub(crate) fn new(val: T, init_strong: u32) -> Self {
+    pub fn new(val: T, init_strong: u32) -> Self {
         Self {
             storage: ManuallyDrop::new(val),
             strong: AtomicU32::new(init_strong),
@@ -40,84 +25,8 @@ impl<T> RcInner<T> {
         &mut self.storage
     }
 
-    pub unsafe fn dispose(&mut self) {
-        ManuallyDrop::drop(&mut self.storage)
-    }
-
     pub fn into_inner(self) -> T {
         ManuallyDrop::into_inner(self.storage)
-    }
-
-    #[inline]
-    pub(crate) fn increment_strong(&self) -> bool {
-        let val = self.strong.fetch_add(1, Ordering::SeqCst);
-        if (val & Self::DESTRUCTED) != 0 {
-            return false;
-        }
-        if val == 0 {
-            // The previous fetch_add created a permission to run decrement again.
-            // Now create an actual reference.
-            self.strong.fetch_add(1, Ordering::SeqCst);
-        }
-        return true;
-    }
-
-    #[inline]
-    pub(crate) unsafe fn decrement_strong<C: Cs>(&mut self, count: u32, cs: Option<&C>) {
-        if self.strong.fetch_sub(count, Ordering::SeqCst) == count {
-            if let Some(cs) = cs {
-                cs.defer(
-                    self,
-                    #[inline(always)]
-                    |inner| unsafe { inner.try_destruct::<C>() },
-                )
-            } else {
-                C::new().defer(
-                    self,
-                    #[inline(always)]
-                    |inner| unsafe { inner.try_destruct::<C>() },
-                )
-            }
-        }
-    }
-
-    #[inline]
-    pub(crate) unsafe fn try_destruct<C: Cs>(&mut self) {
-        if self
-            .strong
-            .compare_exchange(0, Self::DESTRUCTED, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            self.dispose();
-            self.decrement_weak::<C>();
-        } else {
-            self.decrement_strong::<C>(1, None);
-        }
-    }
-
-    #[inline]
-    pub(crate) fn increment_weak(&self) {
-        self.weak.fetch_add(1, Ordering::SeqCst);
-    }
-
-    #[inline]
-    pub(crate) unsafe fn decrement_weak<C: Cs>(&mut self) {
-        if self.weak.fetch_sub(1, Ordering::SeqCst) == 1 {
-            drop(C::own_object(self));
-        }
-    }
-
-    #[inline]
-    pub(crate) fn non_zero(&self) -> bool {
-        let mut curr = self.strong.load(Ordering::SeqCst);
-        if curr == 0 {
-            curr = self
-                .strong
-                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-                .err()
-                .unwrap_or(1);
-        }
-        (curr & Self::DESTRUCTED) == 0
     }
 }
 
@@ -141,7 +50,7 @@ impl<T> Copy for Tagged<T> {}
 
 impl<T> PartialEq for Tagged<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.ptr == other.ptr
+        self.with_high_tag(0).ptr == other.with_high_tag(0).ptr
     }
 }
 
@@ -153,7 +62,17 @@ impl<T> Hash for Tagged<T> {
     }
 }
 
+pub const HIGH_TAG_WIDTH: u32 = 4;
+
 impl<T> Tagged<T> {
+    const fn high_bits_pos() -> u32 {
+        usize::BITS - HIGH_TAG_WIDTH
+    }
+
+    const fn high_bits() -> usize {
+        ((1 << HIGH_TAG_WIDTH) - 1) << Self::high_bits_pos()
+    }
+
     pub fn new(ptr: *mut T) -> Self {
         Self { ptr }
     }
@@ -171,10 +90,15 @@ impl<T> Tagged<T> {
         ptr & low_bits::<T>()
     }
 
+    pub fn high_tag(&self) -> usize {
+        let ptr = self.ptr as usize;
+        (ptr & Self::high_bits()) >> Self::high_bits_pos()
+    }
+
     /// Converts the pointer to a raw pointer (without the tag).
     pub fn as_raw(&self) -> *mut T {
         let ptr = self.ptr as usize;
-        (ptr & !low_bits::<T>()) as *mut T
+        (ptr & !low_bits::<T>() & !Self::high_bits()) as *mut T
     }
 
     pub fn as_usize(&self) -> usize {
@@ -185,18 +109,23 @@ impl<T> Tagged<T> {
         Self::new(with_tag(self.ptr, tag))
     }
 
+    pub fn with_high_tag(&self, tag: usize) -> Self {
+        Self::new(
+            (self.ptr as usize & !Self::high_bits()
+                | ((tag & ((1 << HIGH_TAG_WIDTH) - 1)) << Self::high_bits_pos()))
+                as *mut T,
+        )
+    }
+
     pub unsafe fn deref<'g>(&self) -> &'g T {
-        debug_assert!(!self.msb());
         &*self.as_raw()
     }
 
     pub unsafe fn deref_mut<'g>(&mut self) -> &'g mut T {
-        debug_assert!(!self.msb());
         &mut *self.as_raw()
     }
 
     pub unsafe fn as_ref<'g>(&self) -> Option<&'g T> {
-        debug_assert!(!self.msb());
         if self.is_null() {
             None
         } else {
@@ -205,17 +134,11 @@ impl<T> Tagged<T> {
     }
 
     pub unsafe fn as_mut<'g>(&mut self) -> Option<&'g mut T> {
-        debug_assert!(!self.msb());
         if self.is_null() {
             None
         } else {
             Some(self.deref_mut())
         }
-    }
-
-    #[inline(always)]
-    pub fn msb(&self) -> bool {
-        self.ptr as usize & MSB != 0
     }
 }
 

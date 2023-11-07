@@ -1,5 +1,5 @@
 use atomic::Ordering;
-use circ::{AtomicRc, Cs, Pointer, Rc, Snapshot, StrongPtr, TaggedCnt};
+use circ::{AtomicRc, Cs, GraphNode, Pointer, Rc, Snapshot, StrongPtr, TaggedCnt};
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 
@@ -17,6 +17,13 @@ struct Node<K, V, C: Cs> {
     next: AtomicRc<Self, C>,
     key: K,
     value: V,
+}
+
+impl<K, V, C: Cs> GraphNode<C> for Node<K, V, C> {
+    #[inline]
+    fn pop_outgoings(&self) -> Vec<Rc<Self, C>> {
+        vec![self.next.swap(Rc::null(), Ordering::Relaxed)]
+    }
 }
 
 struct List<K, V, C: Cs> {
@@ -132,7 +139,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
             .next
             .compare_exchange(
                 self.prev_next,
-                &self.curr,
+                self.curr.upgrade(),
                 Ordering::Release,
                 Ordering::Relaxed,
                 cs,
@@ -151,7 +158,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
     ) -> Result<(), Rc<Node<K, V, C>, C>> {
         unsafe { node.deref() }
             .next
-            .swap(Rc::from_snapshot(&self.curr), Ordering::Relaxed, cs);
+            .swap(self.curr.upgrade(), Ordering::Relaxed);
 
         match unsafe { self.prev.deref() }.next.compare_exchange(
             self.curr.as_ptr(),
@@ -161,7 +168,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
             cs,
         ) {
             Ok(_) => Ok(()),
-            Err(e) => Err(e.desired()),
+            Err(e) => Err(e.desired),
         }
     }
 
@@ -173,9 +180,9 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
         self.next.load(&curr_node.next, cs);
         if curr_node
             .next
-            .compare_exchange(
-                self.next.with_tag(0).as_ptr(),
-                self.next.with_tag(1),
+            .compare_exchange_tag(
+                self.next.with_tag(0),
+                1,
                 Ordering::AcqRel,
                 Ordering::Relaxed,
                 cs,
@@ -187,7 +194,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
 
         let _ = unsafe { self.prev.deref() }.next.compare_exchange(
             self.curr.as_ptr(),
-            &self.next,
+            self.next.upgrade(),
             Ordering::Release,
             Ordering::Relaxed,
             cs,

@@ -1,6 +1,6 @@
 use atomic::Ordering;
 
-use crate::{RcInner, TaggedCnt};
+use crate::{GraphNode, RcInner, TaggedCnt};
 
 /// A SMR-specific acquired pointer trait.
 ///
@@ -47,10 +47,22 @@ pub trait Cs {
     fn acquire<T, F>(&self, load: F, shield: &mut Self::RawShield<T>) -> TaggedCnt<T>
     where
         F: Fn(Ordering) -> TaggedCnt<T>;
-    fn weak_acquire<T>(&self, ptr: TaggedCnt<T>) -> *mut Self::WeakGuard<T>;
-    unsafe fn dispose_weak_guard<T>(ptr: *mut Self::WeakGuard<T>);
     unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
         F: FnOnce(&mut RcInner<T>);
     fn clear(&mut self);
+
+    fn timestamp() -> Option<usize>;
+    unsafe fn dispose<T: GraphNode<Self>>(inner: &mut RcInner<T>);
+    fn increment_strong<T>(inner: &RcInner<T>) -> bool;
+    unsafe fn decrement_strong<T: GraphNode<Self>>(
+        inner: &mut RcInner<T>,
+        count: u32,
+        cs: Option<&Self>,
+    );
+    unsafe fn schedule_try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>, cs: Option<&Self>);
+    unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>);
+    fn increment_weak<T>(inner: &RcInner<T>);
+    unsafe fn decrement_weak<T>(inner: &mut RcInner<T>);
+    fn non_zero<T>(inner: &RcInner<T>) -> bool;
 }

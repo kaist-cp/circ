@@ -1,10 +1,13 @@
-use std::{mem::swap, ptr::null};
+use std::mem::{swap, ManuallyDrop};
+use std::ptr::null;
 
 use atomic::Ordering;
 
-use crate::{Acquired, Cs, RcInner, TaggedCnt, Validatable};
+use crate::{Acquired, Cs, GraphNode, RcInner, TaggedCnt, Validatable};
 
 use super::hp_impl::{HazardPointer, Thread, DEFAULT_THREAD};
+
+const DESTRUCTED: u32 = 1 << (u32::BITS - 1);
 
 pub struct AcquiredHP<T> {
     hazptr: HazardPointer,
@@ -129,27 +132,6 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    fn weak_acquire<T>(&self, ptr: TaggedCnt<T>) -> *mut Self::WeakGuard<T> {
-        let thread = unsafe { self.thread.as_ref() }.unwrap();
-        let mut hazptr = HazardPointer::new(thread);
-        hazptr.protect_raw(ptr.as_raw());
-        membarrier::light_membarrier();
-        Box::into_raw(Box::new(WeakGuardHP(AcquiredHP { hazptr, ptr })))
-    }
-
-    #[inline]
-    unsafe fn dispose_weak_guard<T>(ptr: *mut Self::WeakGuard<T>) {
-        let guard = *Box::from_raw(ptr);
-        let hazptr = guard.0.hazptr;
-        let thread = &*DEFAULT_THREAD.with(|t| (&**t) as *const Thread);
-        if thread.record == hazptr.owner_record() {
-            drop(hazptr);
-        } else {
-            hazptr.deliver_to_owner();
-        }
-    }
-
-    #[inline]
     unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
         F: FnOnce(&mut RcInner<T>),
@@ -166,5 +148,96 @@ impl Cs for CsHP {
     #[inline]
     fn clear(&mut self) {
         // No-op for HP.
+    }
+
+    #[inline]
+    unsafe fn dispose<T>(inner: &mut RcInner<T>) {
+        ManuallyDrop::drop(&mut inner.storage);
+        Self::decrement_weak(inner);
+    }
+
+    #[inline]
+    fn increment_strong<T>(inner: &RcInner<T>) -> bool {
+        let val = inner.strong.fetch_add(1, Ordering::SeqCst);
+        if (val & DESTRUCTED) != 0 {
+            return false;
+        }
+        if val == 0 {
+            // The previous fetch_add created a permission to run decrement again.
+            // Now create an actual reference.
+            inner.strong.fetch_add(1, Ordering::SeqCst);
+        }
+        return true;
+    }
+
+    #[inline]
+    unsafe fn decrement_strong<T: GraphNode<Self>>(
+        inner: &mut RcInner<T>,
+        count: u32,
+        cs: Option<&Self>,
+    ) {
+        if inner.strong.fetch_sub(count, Ordering::SeqCst) == count {
+            Self::schedule_try_destruct(inner, cs);
+        }
+    }
+
+    #[inline]
+    unsafe fn schedule_try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>, cs: Option<&Self>) {
+        if let Some(cs) = cs {
+            cs.defer(
+                inner,
+                #[inline(always)]
+                |inner| unsafe { Self::try_destruct(inner) },
+            )
+        } else {
+            Self::new().defer(
+                inner,
+                #[inline(always)]
+                |inner| unsafe { Self::try_destruct(inner) },
+            )
+        }
+    }
+
+    #[inline]
+    unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>) {
+        if inner
+            .strong
+            .compare_exchange(0, DESTRUCTED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            Self::dispose(inner);
+        } else {
+            Self::decrement_strong(inner, 1, None);
+        }
+    }
+
+    #[inline]
+    fn increment_weak<T>(inner: &RcInner<T>) {
+        inner.weak.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[inline]
+    unsafe fn decrement_weak<T>(inner: &mut RcInner<T>) {
+        if inner.weak.fetch_sub(1, Ordering::SeqCst) == 1 {
+            drop(Self::own_object(inner));
+        }
+    }
+
+    #[inline]
+    fn non_zero<T>(inner: &RcInner<T>) -> bool {
+        let mut curr = inner.strong.load(Ordering::SeqCst);
+        if curr == 0 {
+            curr = inner
+                .strong
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .err()
+                .unwrap_or(1);
+        }
+        (curr & DESTRUCTED) == 0
+    }
+
+    #[inline]
+    fn timestamp() -> Option<usize> {
+        None
     }
 }

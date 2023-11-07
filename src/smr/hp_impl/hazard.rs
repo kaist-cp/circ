@@ -99,11 +99,13 @@ impl HazardPointer {
     }
 
     #[inline]
+    #[allow(unused)]
     pub fn owner_record(&self) -> *const ThreadRecord {
         self.record
     }
 
     #[inline]
+    #[allow(unused)]
     pub fn deliver_to_owner(self) {
         // NOTE: resetting protection here might incur UAF, as the owner thread can grow the
         // array of slots and reclaim the old array concurrently.

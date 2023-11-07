@@ -7,7 +7,7 @@ use std::{
 use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
-use crate::{Cs, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
+use crate::{Cs, GraphNode, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -59,7 +59,7 @@ impl<T, C: Cs> AtomicWeak<T, C> {
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                cnt.decrement_weak::<C>()
+                C::decrement_weak(cnt);
             }
         }
     }
@@ -137,6 +137,7 @@ impl<T, C: Cs> AtomicWeak<T, C> {
         cs: &'g C,
     ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, P>>
     where
+        T: GraphNode<C>,
         P: WeakPtr<T, C>,
     {
         loop {
@@ -187,7 +188,7 @@ impl<T, C: Cs> Drop for AtomicWeak<T, C> {
         let ptr = self.link.load(Ordering::SeqCst);
         unsafe {
             if let Some(cnt) = ptr.as_raw().as_mut() {
-                cnt.decrement_weak::<C>();
+                C::decrement_weak(cnt);
             }
         }
     }
@@ -229,7 +230,7 @@ impl<T, C: Cs> Weak<T, C> {
     {
         unsafe {
             if let Some(cnt) = ptr.as_ptr().as_raw().as_ref() {
-                cnt.increment_weak();
+                C::increment_weak(cnt);
                 return Self {
                     ptr: ptr.as_ptr(),
                     _marker: PhantomData,
@@ -247,7 +248,7 @@ impl<T, C: Cs> Weak<T, C> {
         };
         unsafe {
             if let Some(cnt) = weak.ptr.as_raw().as_ref() {
-                cnt.increment_weak();
+                C::increment_weak(cnt);
             }
         }
         weak
@@ -289,7 +290,7 @@ impl<T, C: Cs> Drop for Weak<T, C> {
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                cnt.decrement_weak::<C>();
+                C::decrement_weak(cnt);
             }
         }
     }
@@ -334,7 +335,7 @@ impl<T, C: Cs> WeakPtr<T, C> for Snapshot<T, C> {
     #[inline]
     fn into_weak_count(self) {
         if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            cnt.increment_weak();
+            C::increment_weak(cnt);
         }
     }
 }
@@ -343,7 +344,7 @@ impl<T, C: Cs> WeakPtr<T, C> for &Snapshot<T, C> {
     #[inline]
     fn into_weak_count(self) {
         if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            cnt.increment_weak();
+            C::increment_weak(cnt);
         }
     }
 }
