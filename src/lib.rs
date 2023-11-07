@@ -22,3 +22,14 @@ pub fn set_counts_between_flush_ebr(counts: usize) {
 pub fn set_counts_between_flush_hp(counts: usize) {
     smr::hp_impl::set_counts_between_flush(counts);
 }
+
+#[inline]
+pub fn cleanup_ebr() {
+    let mut guard = crossbeam::epoch::pin();
+    while guard.local_bag_len() > 0
+        || !crossbeam::epoch::default_collector().is_global_queue_empty()
+    {
+        guard.flush();
+        guard.repin();
+    }
+}

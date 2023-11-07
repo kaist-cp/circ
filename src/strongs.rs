@@ -10,9 +10,15 @@ use static_assertions::const_assert;
 use crate::{Acquired, AtomicWeak, Cs, Pointer, RcInner, Tagged, TaggedCnt, Weak};
 
 pub trait GraphNode<C: Cs + ?Sized> {
+    const UNIQUE_OUTDEGREE: bool;
+
     /// Returns `Rc`s in this node.
     /// It is safe to return less than the actual amount of `Rc`s.
     fn pop_outgoings(&self) -> Vec<Rc<Self, C>>
+    where
+        Self: Sized;
+    
+    fn pop_unique(&self) -> Rc<Self, C>
     where
         Self: Sized;
 }
