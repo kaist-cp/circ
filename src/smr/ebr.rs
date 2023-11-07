@@ -1,5 +1,4 @@
 use std::mem::{swap, ManuallyDrop};
-use std::ptr::eq;
 
 use atomic::Ordering;
 
@@ -241,7 +240,7 @@ impl Cs for CsEBR {
     {
         let curr_epoch = Self::timestamp().unwrap();
         let modu: Modular<EPOCH_WIDTH> = Modular::new(curr_epoch as isize + 1);
-        dispose_node(inner, curr_epoch, &modu);
+        dispose_node(inner, curr_epoch, &modu, true);
     }
 
     #[inline]
@@ -283,8 +282,20 @@ impl Cs for CsEBR {
             }
         };
 
-        if hit_zero {
-            Self::schedule_try_destruct(inner, cs);
+        // Trigger a collection periodically.
+        if let Some(cs) = cs {
+            if hit_zero {
+                Self::schedule_try_destruct(inner, Some(cs));
+            }
+            if let Some(guard) = cs.guard.as_ref() {
+                guard.incr_manual_collection();
+            }
+        } else {
+            let cs = Self::new();
+            if hit_zero {
+                Self::schedule_try_destruct(inner, Some(&cs));
+            }
+            cs.guard.as_ref().unwrap().incr_manual_collection();
         }
     }
 
@@ -362,62 +373,64 @@ impl Cs for CsEBR {
 }
 
 unsafe fn dispose_node<T: GraphNode<CsEBR>, const M: u32>(
-    root: *mut RcInner<T>,
+    ptr: *mut RcInner<T>,
     curr_epoch: usize,
     modu: &Modular<M>,
+    is_root: bool,
 ) {
-    let mut stack = vec![root];
-    if let Some(rc) = stack.pop().and_then(|ptr| ptr.as_mut()) {
-        let strong = StrongCount::from_raw(rc.strong.load(Ordering::SeqCst));
-        let node_epoch = strong.epoch();
-        debug_assert_eq!(strong.count(), 0);
+    let rc = match ptr.as_mut() {
+        Some(rc) => rc,
+        None => return,
+    };
+    let strong = StrongCount::from_raw(rc.strong.load(Ordering::SeqCst));
+    let node_epoch = strong.epoch();
+    debug_assert_eq!(strong.count(), 0);
 
-        // Note that `eq(rc, root)` is necessary, because if `node_epoch` is old enough,
-        // `modu.le` may return false.
-        if eq(rc, root) || modu.le(node_epoch as _, curr_epoch as isize - 3) {
-            // The current node is immediately reclaimable.
-            for next in rc.data().pop_outgoings() {
-                if next.is_null() {
-                    continue;
-                }
-
-                let next_ptr = next.into_raw();
-                let next_ref = next_ptr.deref();
-                let link_epoch = next_ptr.high_tag() as u32;
-
-                // Decrement next node's strong count and update its epoch.
-                let next_cnt = loop {
-                    let cnt_curr = StrongCount::from_raw(next_ref.strong.load(Ordering::SeqCst));
-                    let next_epoch =
-                        modu.max(&[node_epoch as _, link_epoch as _, cnt_curr.epoch() as _]);
-                    let cnt_next = cnt_curr.sub_count(1).with_epoch(next_epoch as _);
-
-                    if next_ref
-                        .strong
-                        .compare_exchange(
-                            cnt_curr.inner,
-                            cnt_next.inner,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        )
-                        .is_ok()
-                    {
-                        break cnt_next;
-                    }
-                };
-
-                // If the reference count hit zero, try dispose it recursively.
-                if next_cnt.count() == 0 {
-                    stack.push(next_ptr.as_raw())
-                }
+    // Note that `eq(rc, root)` is necessary, because if `node_epoch` is old enough,
+    // `modu.le` may return false.
+    if is_root || modu.le(node_epoch as _, curr_epoch as isize - 3) {
+        // The current node is immediately reclaimable.
+        for next in rc.data().pop_outgoings() {
+            if next.is_null() {
+                continue;
             }
-            unsafe {
-                ManuallyDrop::drop(&mut rc.storage);
-                CsEBR::decrement_weak(rc);
+
+            let next_ptr = next.into_raw();
+            let next_ref = next_ptr.deref();
+            let link_epoch = next_ptr.high_tag() as u32;
+
+            // Decrement next node's strong count and update its epoch.
+            let next_cnt = loop {
+                let cnt_curr = StrongCount::from_raw(next_ref.strong.load(Ordering::SeqCst));
+                let next_epoch =
+                    modu.max(&[node_epoch as _, link_epoch as _, cnt_curr.epoch() as _]);
+                let cnt_next = cnt_curr.sub_count(1).with_epoch(next_epoch as _);
+
+                if next_ref
+                    .strong
+                    .compare_exchange(
+                        cnt_curr.inner,
+                        cnt_next.inner,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    )
+                    .is_ok()
+                {
+                    break cnt_next;
+                }
+            };
+
+            // If the reference count hit zero, try dispose it recursively.
+            if next_cnt.count() == 0 {
+                dispose_node(next_ptr.as_raw(), curr_epoch, modu, false);
             }
-        } else {
-            // It is likely to be unsafe to reclaim right now.
-            CsEBR::schedule_try_destruct(rc, None);
         }
+        unsafe {
+            ManuallyDrop::drop(&mut rc.storage);
+            CsEBR::decrement_weak(rc);
+        }
+    } else {
+        // It is likely to be unsafe to reclaim right now.
+        CsEBR::schedule_try_destruct(rc, None);
     }
 }
