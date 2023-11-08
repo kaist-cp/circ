@@ -15,7 +15,7 @@ pub use weak::*;
 
 #[inline]
 pub fn set_counts_between_flush_ebr(counts: usize) {
-    crossbeam::epoch::set_bag_capacity(counts);
+    smr::ebr_impl::set_bag_capacity(counts);
 }
 
 #[inline]
@@ -25,10 +25,8 @@ pub fn set_counts_between_flush_hp(counts: usize) {
 
 #[inline]
 pub fn cleanup_ebr() {
-    let mut guard = crossbeam::epoch::pin();
-    while guard.local_bag_len() > 0
-        || !crossbeam::epoch::default_collector().is_global_queue_empty()
-    {
+    let mut guard = smr::ebr_impl::pin();
+    while guard.local_bag_len() > 0 || !smr::ebr_impl::default_collector().is_global_queue_empty() {
         guard.flush();
         guard.repin();
     }

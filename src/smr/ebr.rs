@@ -2,6 +2,7 @@ use std::mem::{swap, ManuallyDrop};
 
 use atomic::Ordering;
 
+use super::ebr_impl::{default_collector, pin, Guard};
 use crate::utils::RcInner;
 use crate::{Acquired, Cs, GraphNode, TaggedCnt, HIGH_TAG_WIDTH};
 use crate::{Pointer, Validatable};
@@ -161,18 +162,18 @@ impl<T> Validatable<T> for WeakGuardEBR<T> {
 }
 
 pub struct CsEBR {
-    guard: Option<crossbeam::epoch::Guard>,
+    guard: Option<Guard>,
 }
 
 impl CsEBR {
-    pub fn guard(&self) -> Option<&crossbeam::epoch::Guard> {
+    pub fn guard(&self) -> Option<&Guard> {
         self.guard.as_ref()
     }
 }
 
-impl From<crossbeam::epoch::Guard> for CsEBR {
+impl From<Guard> for CsEBR {
     #[inline(always)]
-    fn from(guard: crossbeam::epoch::Guard) -> Self {
+    fn from(guard: Guard) -> Self {
         Self { guard: Some(guard) }
     }
 }
@@ -183,7 +184,7 @@ impl Cs for CsEBR {
 
     #[inline(always)]
     fn new() -> Self {
-        Self::from(crossbeam::epoch::pin())
+        Self::from(pin())
     }
 
     #[inline]
@@ -378,7 +379,7 @@ impl Cs for CsEBR {
 
     #[inline]
     fn timestamp() -> Option<usize> {
-        Some(crossbeam::epoch::default_collector().global_epoch().value())
+        Some(default_collector().global_epoch().value())
     }
 }
 

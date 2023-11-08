@@ -17,7 +17,7 @@ pub trait GraphNode<C: Cs + ?Sized> {
     fn pop_outgoings(&self) -> Vec<Rc<Self, C>>
     where
         Self: Sized;
-    
+
     fn pop_unique(&self) -> Rc<Self, C>
     where
         Self: Sized;

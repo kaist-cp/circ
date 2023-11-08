@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use crossbeam::utils::CachePadded;
+use crossbeam_utils::CachePadded;
 use rustc_hash::FxHashSet;
 
 use super::hazard::ThreadRecords;

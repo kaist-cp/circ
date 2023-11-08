@@ -11,7 +11,7 @@ use super::thread::Thread;
 use super::DEFAULT_THREAD;
 
 use atomic::fence;
-use crossbeam::utils::CachePadded;
+use crossbeam_utils::CachePadded;
 
 #[derive(Debug)]
 pub struct HazardPointer {
