@@ -11,7 +11,7 @@
 use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-use crossbeam_utils::CachePadded;
+use crossbeam_utils::{Backoff, CachePadded};
 
 use super::super::{unprotected, Atomic, Guard, Owned, Shared};
 
@@ -188,15 +188,17 @@ impl<T> Queue<T> {
     ///
     /// Returns `None` if the queue is observed to be empty, or the head does not satisfy the given
     /// condition.
-    pub(crate) fn try_pop_if<F>(&self, condition: F, guard: &Guard) -> TryPopResult<T>
+    pub(crate) fn try_pop_if<F>(&self, condition: F, guard: &Guard) -> Option<T>
     where
         T: Sync,
         F: Fn(&T) -> bool,
     {
-        match self.pop_if_internal(&condition, guard) {
-            Ok(Some(v)) => TryPopResult::Success(v),
-            Ok(None) => TryPopResult::Empty,
-            Err(_) => TryPopResult::ExchangeFailure,
+        let backoff = Backoff::new();
+        loop {
+            if let Ok(head) = self.pop_if_internal(&condition, guard) {
+                return head;
+            }
+            backoff.spin();
         }
     }
 
@@ -218,12 +220,6 @@ impl<T> Drop for Queue<T> {
             drop(sentinel.into_owned());
         }
     }
-}
-
-pub(crate) enum TryPopResult<T> {
-    Success(T),
-    Empty,
-    ExchangeFailure,
 }
 
 #[cfg(all(test, not(crossbeam_loom)))]

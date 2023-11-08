@@ -73,7 +73,7 @@ impl Epoch {
     /// Returns the epoch value.
     #[inline]
     pub fn value(self) -> usize {
-        self.unpinned().data
+        self.unpinned().data >> 1
     }
 }
 

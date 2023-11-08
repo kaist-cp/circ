@@ -1,16 +1,21 @@
+use std::cell::Cell;
 use std::mem::{swap, ManuallyDrop};
 
 use atomic::Ordering;
 
 use super::ebr_impl::{default_collector, pin, Guard};
 use crate::utils::RcInner;
-use crate::{Acquired, Cs, GraphNode, TaggedCnt, HIGH_TAG_WIDTH};
+use crate::{ebr_impl, Acquired, Cs, GraphNode, TaggedCnt, HIGH_TAG_WIDTH};
 use crate::{Pointer, Validatable};
 
 const EPOCH_WIDTH: u32 = HIGH_TAG_WIDTH;
 const EPOCH_MASK_HEIGHT: u32 = u32::BITS - EPOCH_WIDTH;
 const EPOCH_MASK: u32 = ((1 << EPOCH_WIDTH) - 1) << EPOCH_MASK_HEIGHT;
 const DESTRUCTED_MASK: u32 = 1 << (EPOCH_MASK_HEIGHT - 1);
+
+thread_local! {
+    static DISPOSE_COUNTER: Cell<usize> = Cell::new(0);
+}
 
 /// Effectively wraps the presence of epoch and destruction bits.
 #[derive(Clone, Copy)]
@@ -245,13 +250,14 @@ impl Cs for CsEBR {
         T: GraphNode<Self>,
         Self: Sized,
     {
-        let curr_epoch = Self::timestamp().unwrap();
-        let modu: Modular<EPOCH_WIDTH> = Modular::new(curr_epoch as isize + 1);
-        if T::UNIQUE_OUTDEGREE {
-            dispose_list(inner, curr_epoch, &modu);
-        } else {
-            dispose_general_node(inner, curr_epoch, &modu, 0);
-        }
+        let cs = &CsEBR::new();
+        DISPOSE_COUNTER.with(|counter| {
+            if T::UNIQUE_OUTDEGREE {
+                dispose_list(inner, counter, cs);
+            } else {
+                dispose_general_node(inner, 0, &counter, cs);
+            }
+        });
     }
 
     #[inline]
@@ -383,26 +389,35 @@ impl Cs for CsEBR {
     }
 }
 
-unsafe fn dispose_general_node<T: GraphNode<CsEBR>, const M: u32>(
+unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
     ptr: *mut RcInner<T>,
-    curr_epoch: usize,
-    modu: &Modular<M>,
     depth: usize,
+    counter: &Cell<usize>,
+    cs: &CsEBR,
 ) {
     let rc = match ptr.as_mut() {
         Some(rc) => rc,
         None => return,
     };
 
+    let count = counter.get();
+    counter.set(count + 1);
+    if count % 128 == 0 {
+        try_advance_repin(cs.guard.as_ref().unwrap());
+    }
+
     if depth >= 1024 {
         // Prevent a potential stack overflow.
-        CsEBR::schedule_try_destruct(rc, None);
+        CsEBR::schedule_try_destruct(rc, Some(cs));
         return;
     }
 
     let strong = StrongCount::from_raw(rc.strong.load(Ordering::SeqCst));
     let node_epoch = strong.epoch();
     debug_assert_eq!(strong.count(), 0);
+
+    let curr_epoch = default_collector().global_epoch().value();
+    let modu: Modular<EPOCH_WIDTH> = Modular::new(curr_epoch as isize + 1);
 
     // Note that checking whether it is a root is necessary, because if `node_epoch` is
     // old enough, `modu.le` may return false.
@@ -440,7 +455,7 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>, const M: u32>(
 
             // If the reference count hit zero, try dispose it recursively.
             if next_cnt.count() == 0 {
-                dispose_general_node(next_ptr.as_raw(), curr_epoch, modu, depth + 1);
+                dispose_general_node(next_ptr.as_raw(), depth + 1, counter, cs);
             }
         }
         unsafe {
@@ -449,17 +464,27 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>, const M: u32>(
         }
     } else {
         // It is likely to be unsafe to reclaim right now.
-        CsEBR::schedule_try_destruct(rc, None);
+        CsEBR::schedule_try_destruct(rc, Some(cs));
     }
 }
 
-unsafe fn dispose_list<T: GraphNode<CsEBR>, const M: u32>(
+unsafe fn dispose_list<T: GraphNode<CsEBR>>(
     root: *mut RcInner<T>,
-    curr_epoch: usize,
-    modu: &Modular<M>,
+    counter: &Cell<usize>,
+    cs: &CsEBR,
 ) {
     let mut ptr = Some(root);
+    let mut curr_epoch = default_collector().global_epoch().value();
+    let mut modu: Modular<EPOCH_WIDTH> = Modular::new(curr_epoch as isize + 1);
+
     while let Some(rc) = ptr.take().and_then(|ptr| ptr.as_mut()) {
+        let count = counter.get();
+        counter.set(count + 1);
+        if count % 128 == 0 {
+            try_advance_repin(cs.guard.as_ref().unwrap());
+            curr_epoch = default_collector().global_epoch().value();
+            modu = Modular::new(curr_epoch as isize + 1);
+        }
         let strong = StrongCount::from_raw(rc.strong.load(Ordering::SeqCst));
         let node_epoch = strong.epoch();
         debug_assert_eq!(strong.count(), 0);
@@ -506,7 +531,14 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>, const M: u32>(
             }
         } else {
             // It is likely to be unsafe to reclaim right now.
-            CsEBR::schedule_try_destruct(rc, None);
+            CsEBR::schedule_try_destruct(rc, Some(cs));
         }
+    }
+}
+
+unsafe fn try_advance_repin(guard: &Guard) {
+    ebr_impl::default_collector().global.try_advance(guard);
+    if let Some(local) = guard.local.as_ref() {
+        local.repin_without_collect();
     }
 }

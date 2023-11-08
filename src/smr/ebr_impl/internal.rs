@@ -51,7 +51,7 @@ use super::deferred::Deferred;
 use super::epoch::{AtomicEpoch, Epoch};
 use super::guard::{unprotected, Guard};
 use super::sync::list::{Entry, IsElement, IterError, List};
-use super::sync::queue::{Queue, TryPopResult};
+use super::sync::queue::Queue;
 
 #[allow(missing_docs)]
 pub static GLOBAL_GARBAGE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -212,34 +212,29 @@ impl Global {
         if let Some(local) = unsafe { guard.local.as_ref() } {
             local.manual_count.set(0);
         }
-        let global_epoch = self.try_advance(guard);
+        self.try_advance(guard);
 
         debug_assert!(
             !guard.local.is_null(),
             "An unprotected guard cannot be used to collect global garbages."
         );
 
-        let collecting = &unsafe { &*guard.local }.collecting;
-        if collecting.get() {
-            // Prevent nested collections.
-            return;
-        }
-        collecting.set(true);
-
-        for _ in 0..Self::COLLECTS_MIN_TRIALS {
-            match self.queue.try_pop_if(
-                &|sealed_bag: &SealedBag| sealed_bag.is_expired(global_epoch),
-                guard,
-            ) {
-                TryPopResult::Empty => break,
-                TryPopResult::ExchangeFailure => continue,
-                TryPopResult::Success(sealed_bag) => {
-                    GLOBAL_GARBAGE_COUNT.fetch_sub(sealed_bag.bag.0.len(), Ordering::AcqRel);
-                    drop(sealed_bag);
+        unsafe { &*guard.local }.with_collecting(|| {
+            for _ in 0..Self::COLLECTS_MIN_TRIALS {
+                match self.queue.try_pop_if(
+                    &|sealed_bag: &SealedBag| {
+                        sealed_bag.is_expired(self.epoch.load(Ordering::Relaxed))
+                    },
+                    guard,
+                ) {
+                    None => break,
+                    Some(sealed_bag) => {
+                        GLOBAL_GARBAGE_COUNT.fetch_sub(sealed_bag.bag.0.len(), Ordering::AcqRel);
+                        drop(sealed_bag);
+                    }
                 }
             }
-        }
-        collecting.set(false);
+        });
     }
 
     /// Attempts to advance the global epoch.
@@ -318,10 +313,9 @@ pub(crate) struct Local {
 
     /// This is just an auxilliary counter that sometimes kicks off collection.
     collect_count: Cell<usize>,
-    advance_count: Cell<usize>,
-    prev_epoch: Cell<Epoch>,
     manual_count: Cell<usize>,
 
+    must_collect: Cell<bool>,
     collecting: Cell<bool>,
 
     /// The local epoch.
@@ -346,11 +340,6 @@ impl Local {
         unsafe { MAX_OBJECTS }
     }
 
-    #[inline]
-    fn counts_between_try_advance() -> usize {
-        unsafe { MAX_OBJECTS * 2 }
-    }
-
     /// Registers a new `Local` in the provided `Global`.
     pub(crate) fn register(collector: &Collector) -> LocalHandle {
         unsafe {
@@ -363,9 +352,8 @@ impl Local {
                 guard_count: Cell::new(0),
                 handle_count: Cell::new(1),
                 collect_count: Cell::new(0),
-                advance_count: Cell::new(0),
-                prev_epoch: Cell::new(Epoch::starting()),
                 manual_count: Cell::new(0),
+                must_collect: Cell::new(false),
                 collecting: Cell::new(false),
                 epoch: CachePadded::new(AtomicEpoch::new(Epoch::starting())),
             })
@@ -379,7 +367,7 @@ impl Local {
 
     #[inline]
     pub(crate) fn epoch(&self) -> Epoch {
-        self.epoch.load(Ordering::Acquire)
+        self.epoch.load(Ordering::Relaxed)
     }
 
     /// Returns a reference to the `Global` in which this `Local` resides.
@@ -404,14 +392,13 @@ impl Local {
         let collect_count = self.collect_count.get().wrapping_add(1);
         self.collect_count.set(collect_count);
 
-        let advance_count = self.advance_count.get().wrapping_add(1);
-        self.advance_count.set(advance_count);
-
-        if advance_count % Self::counts_between_try_advance() == 0 {
+        if is_collecting || collect_count % Self::counts_between_collect() == 0 {
             self.global().try_advance(&guard);
-        } else if is_collecting || collect_count % Self::counts_between_collect() == 0 {
-            // After every `COUNTS_BETWEEN_COLLECT` try collecting some old garbage bags.
-            self.global().collect(&guard);
+            if self.collecting.get() {
+                self.repin_without_collect();
+            } else {
+                self.must_collect.set(true);
+            }
         }
     }
 
@@ -426,6 +413,11 @@ impl Local {
         while let Err(d) = bag.try_push(deferred) {
             self.global().push_bag(bag, guard);
             deferred = d;
+
+            if self.collecting.get() {
+                self.global().try_advance(guard);
+                self.repin_without_collect();
+            }
         }
 
         self.incr_counts(false, guard);
@@ -442,6 +434,17 @@ impl Local {
         if !bag.is_empty() {
             self.global().push_bag(bag, guard);
         }
+    }
+
+    #[inline]
+    pub(crate) fn with_collecting<F: Fn()>(&self, f: F) {
+        if self.collecting.get() {
+            // Prevent nested collections.
+            return;
+        }
+        self.collecting.set(true);
+        f();
+        self.collecting.set(false);
     }
 
     /// Pins the `Local`.
@@ -492,15 +495,24 @@ impl Local {
                 self.epoch.store(new_epoch, Ordering::Relaxed);
                 atomic::fence(Ordering::SeqCst);
             }
-
-            // Reset the advance couter if epoch has advanced.
-            if new_epoch != self.prev_epoch.get() {
-                self.prev_epoch.set(new_epoch);
-                self.advance_count.set(0);
-            }
         }
 
         guard
+    }
+
+    #[inline]
+    pub(crate) fn collect_if_scheduled(&self) {
+        if self.collecting.get() {
+            return;
+        }
+        if self.must_collect.get() {
+            self.must_collect.set(false);
+            let guard = self.pin();
+            self.global().collect(&guard);
+            // If the `collect` above has scheduled a collection again, by calling `unpin` in
+            // `Guard::drop`, this function will be called again.
+            drop(guard);
+        }
     }
 
     /// Unpins the `Local`.
@@ -512,6 +524,8 @@ impl Local {
         if guard_count == 1 {
             self.epoch.store(Epoch::starting(), Ordering::Release);
 
+            self.collect_if_scheduled();
+
             if self.handle_count.get() == 0 {
                 self.finalize();
             }
@@ -521,23 +535,24 @@ impl Local {
     /// Unpins and then pins the `Local`.
     #[inline]
     pub(crate) fn repin(&self) {
-        let guard_count = self.guard_count.get();
+        self.acquire_handle();
+        self.unpin();
+        atomic::compiler_fence(Ordering::SeqCst);
+        mem::forget(self.pin());
+        self.release_handle();
+    }
 
-        // Update the local epoch only if there's only one guard.
-        if guard_count == 1 {
-            let epoch = self.epoch.load(Ordering::Relaxed);
-            let global_epoch = self.global().epoch.load(Ordering::Relaxed).pinned();
+    /// Repins the local epoch without checking a scheduled collection.
+    #[inline]
+    pub(crate) fn repin_without_collect(&self) {
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        let global_epoch = self.global().epoch.load(Ordering::Relaxed).pinned();
 
-            // Update the local epoch only if the global epoch is greater than the local epoch.
-            if epoch != global_epoch {
-                // We store the new epoch with `Release` because we need to ensure any memory
-                // accesses from the previous epoch do not leak into the new one.
-                self.epoch.store(global_epoch, Ordering::Release);
-
-                // However, we don't need a following `SeqCst` fence, because it is safe for memory
-                // accesses from the new epoch to be executed before updating the local epoch. At
-                // worse, other threads will see the new epoch late and delay GC slightly.
-            }
+        // Update the local epoch only if the global epoch is greater than the local epoch.
+        if epoch != global_epoch {
+            // We store the new epoch with `Release` because we need to ensure any memory
+            // accesses from the previous epoch do not leak into the new one.
+            self.epoch.store(global_epoch, Ordering::Release);
         }
     }
 
