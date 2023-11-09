@@ -5,7 +5,7 @@ use atomic::Ordering;
 
 use super::ebr_impl::{default_collector, pin, Guard};
 use crate::utils::RcInner;
-use crate::{ebr_impl, Acquired, Cs, GraphNode, TaggedCnt, HIGH_TAG_WIDTH};
+use crate::{Acquired, Cs, GraphNode, TaggedCnt, HIGH_TAG_WIDTH};
 use crate::{Pointer, Validatable};
 
 const EPOCH_WIDTH: u32 = HIGH_TAG_WIDTH;
@@ -403,7 +403,9 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
     let count = counter.get();
     counter.set(count + 1);
     if count % 128 == 0 {
-        try_advance_repin(cs.guard.as_ref().unwrap());
+        if let Some(local) = cs.guard.as_ref().unwrap().local.as_ref() {
+            local.repin_without_collect();
+        }
     }
 
     if depth >= 1024 {
@@ -481,7 +483,9 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
         let count = counter.get();
         counter.set(count + 1);
         if count % 128 == 0 {
-            try_advance_repin(cs.guard.as_ref().unwrap());
+            if let Some(local) = cs.guard.as_ref().unwrap().local.as_ref() {
+                local.repin_without_collect();
+            }
             curr_epoch = default_collector().global_epoch().value();
             modu = Modular::new(curr_epoch as isize + 1);
         }
@@ -533,12 +537,5 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
             // It is likely to be unsafe to reclaim right now.
             CsEBR::schedule_try_destruct(rc, Some(cs));
         }
-    }
-}
-
-unsafe fn try_advance_repin(guard: &Guard) {
-    ebr_impl::default_collector().global.try_advance(guard);
-    if let Some(local) = guard.local.as_ref() {
-        local.repin_without_collect();
     }
 }

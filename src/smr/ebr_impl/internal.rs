@@ -388,12 +388,11 @@ impl Local {
         self.guard_count.get() > 0
     }
 
-    fn incr_counts(&self, is_collecting: bool, guard: &Guard) {
+    fn incr_counts(&self, is_collecting: bool) {
         let collect_count = self.collect_count.get().wrapping_add(1);
         self.collect_count.set(collect_count);
 
         if is_collecting || collect_count % Self::counts_between_collect() == 0 {
-            self.global().try_advance(&guard);
             if self.collecting.get() {
                 self.repin_without_collect();
             } else {
@@ -415,17 +414,16 @@ impl Local {
             deferred = d;
 
             if self.collecting.get() {
-                self.global().try_advance(guard);
                 self.repin_without_collect();
             }
         }
 
-        self.incr_counts(false, guard);
+        self.incr_counts(false);
     }
 
     pub(crate) fn flush(&self, guard: &Guard) {
         self.push_to_global(guard);
-        self.incr_counts(true, guard);
+        self.incr_counts(true);
     }
 
     pub(crate) fn push_to_global(&self, guard: &Guard) {
