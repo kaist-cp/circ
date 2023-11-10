@@ -454,44 +454,50 @@ impl Local {
         self.guard_count.set(guard_count.checked_add(1).unwrap());
 
         if guard_count == 0 {
-            let global_epoch = self.global().epoch.load(Ordering::Relaxed);
-            let new_epoch = global_epoch.pinned();
+            loop {
+                let global_epoch = self.global().epoch.load(Ordering::Relaxed);
+                let new_epoch = global_epoch.pinned();
 
-            // Now we must store `new_epoch` into `self.epoch` and execute a `SeqCst` fence.
-            // The fence makes sure that any future loads from `Atomic`s will not happen before
-            // this store.
-            if cfg!(all(
-                any(target_arch = "x86", target_arch = "x86_64"),
-                not(miri)
-            )) {
-                // HACK(stjepang): On x86 architectures there are two different ways of executing
-                // a `SeqCst` fence.
-                //
-                // 1. `atomic::fence(SeqCst)`, which compiles into a `mfence` instruction.
-                // 2. `_.compare_exchange(_, _, SeqCst, SeqCst)`, which compiles into a `lock cmpxchg`
-                //    instruction.
-                //
-                // Both instructions have the effect of a full barrier, but benchmarks have shown
-                // that the second one makes pinning faster in this particular case.  It is not
-                // clear that this is permitted by the C++ memory model (SC fences work very
-                // differently from SC accesses), but experimental evidence suggests that this
-                // works fine.  Using inline assembly would be a viable (and correct) alternative,
-                // but alas, that is not possible on stable Rust.
-                let current = Epoch::starting();
-                let res = self.epoch.compare_exchange(
-                    current,
-                    new_epoch,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                );
-                debug_assert!(res.is_ok(), "participant was expected to be unpinned");
-                // We add a compiler fence to make it less likely for LLVM to do something wrong
-                // here.  Formally, this is not enough to get rid of data races; practically,
-                // it should go a long way.
-                atomic::compiler_fence(Ordering::SeqCst);
-            } else {
-                self.epoch.store(new_epoch, Ordering::Relaxed);
-                atomic::fence(Ordering::SeqCst);
+                // Now we must store `new_epoch` into `self.epoch` and execute a `SeqCst` fence.
+                // The fence makes sure that any future loads from `Atomic`s will not happen before
+                // this store.
+                if cfg!(all(
+                    any(target_arch = "x86", target_arch = "x86_64"),
+                    not(miri)
+                )) {
+                    // HACK(stjepang): On x86 architectures there are two different ways of executing
+                    // a `SeqCst` fence.
+                    //
+                    // 1. `atomic::fence(SeqCst)`, which compiles into a `mfence` instruction.
+                    // 2. `_.compare_exchange(_, _, SeqCst, SeqCst)`, which compiles into a `lock cmpxchg`
+                    //    instruction.
+                    //
+                    // Both instructions have the effect of a full barrier, but benchmarks have shown
+                    // that the second one makes pinning faster in this particular case.  It is not
+                    // clear that this is permitted by the C++ memory model (SC fences work very
+                    // differently from SC accesses), but experimental evidence suggests that this
+                    // works fine.  Using inline assembly would be a viable (and correct) alternative,
+                    // but alas, that is not possible on stable Rust.
+                    let current = Epoch::starting();
+                    let res = self.epoch.compare_exchange(
+                        current,
+                        new_epoch,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                    debug_assert!(res.is_ok(), "participant was expected to be unpinned");
+                    // We add a compiler fence to make it less likely for LLVM to do something wrong
+                    // here.  Formally, this is not enough to get rid of data races; practically,
+                    // it should go a long way.
+                    atomic::compiler_fence(Ordering::SeqCst);
+                } else {
+                    self.epoch.store(new_epoch, Ordering::Relaxed);
+                    atomic::fence(Ordering::SeqCst);
+                }
+
+                if new_epoch.value() == self.global().epoch.load(Ordering::Acquire).value() {
+                    break;
+                }
             }
         }
 
