@@ -29,6 +29,10 @@ impl Domain {
             .flat_map(|thread| thread.iter(reclaimer))
             .collect()
     }
+
+    pub fn num_garbages(&self) -> usize {
+        self.num_garbages.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for Domain {

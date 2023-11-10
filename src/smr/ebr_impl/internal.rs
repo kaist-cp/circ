@@ -177,7 +177,7 @@ pub(crate) struct Global {
 }
 
 impl Global {
-    const COLLECTS_MIN_TRIALS: usize = 8;
+    const COLLECTS_TRIALS: usize = 16;
 
     /// Creates a new global data for garbage collection.
     #[inline]
@@ -219,22 +219,18 @@ impl Global {
             "An unprotected guard cannot be used to collect global garbages."
         );
 
-        unsafe { &*guard.local }.with_collecting(|| {
-            for _ in 0..Self::COLLECTS_MIN_TRIALS {
-                match self.queue.try_pop_if(
-                    &|sealed_bag: &SealedBag| {
-                        sealed_bag.is_expired(self.epoch.load(Ordering::Relaxed))
-                    },
-                    guard,
-                ) {
-                    None => break,
-                    Some(sealed_bag) => {
-                        GLOBAL_GARBAGE_COUNT.fetch_sub(sealed_bag.bag.0.len(), Ordering::AcqRel);
-                        drop(sealed_bag);
-                    }
+        for _ in 0..Self::COLLECTS_TRIALS {
+            match self.queue.try_pop_if(
+                &|sealed_bag: &SealedBag| sealed_bag.is_expired(self.epoch.load(Ordering::Relaxed)),
+                guard,
+            ) {
+                None => break,
+                Some(sealed_bag) => {
+                    GLOBAL_GARBAGE_COUNT.fetch_sub(sealed_bag.bag.0.len(), Ordering::AcqRel);
+                    drop(sealed_bag);
                 }
             }
-        });
+        }
     }
 
     /// Attempts to advance the global epoch.
@@ -312,7 +308,6 @@ pub(crate) struct Local {
     handle_count: Cell<usize>,
 
     /// This is just an auxilliary counter that sometimes kicks off collection.
-    collect_count: Cell<usize>,
     manual_count: Cell<usize>,
 
     must_collect: Cell<bool>,
@@ -335,11 +330,6 @@ fn local_size() {
 }
 
 impl Local {
-    #[inline]
-    fn counts_between_collect() -> usize {
-        unsafe { MAX_OBJECTS }
-    }
-
     /// Registers a new `Local` in the provided `Global`.
     pub(crate) fn register(collector: &Collector) -> LocalHandle {
         unsafe {
@@ -351,7 +341,6 @@ impl Local {
                 bag: UnsafeCell::new(Bag::new()),
                 guard_count: Cell::new(0),
                 handle_count: Cell::new(1),
-                collect_count: Cell::new(0),
                 manual_count: Cell::new(0),
                 must_collect: Cell::new(false),
                 collecting: Cell::new(false),
@@ -388,19 +377,6 @@ impl Local {
         self.guard_count.get() > 0
     }
 
-    fn incr_counts(&self, is_collecting: bool) {
-        let collect_count = self.collect_count.get().wrapping_add(1);
-        self.collect_count.set(collect_count);
-
-        if is_collecting || collect_count % Self::counts_between_collect() == 0 {
-            if self.collecting.get() {
-                self.repin_without_collect();
-            } else {
-                self.must_collect.set(true);
-            }
-        }
-    }
-
     /// Adds `deferred` to the thread-local bag.
     ///
     /// # Safety
@@ -413,17 +389,19 @@ impl Local {
             self.global().push_bag(bag, guard);
             deferred = d;
 
+            self.must_collect.set(true);
             if self.collecting.get() {
                 self.repin_without_collect();
             }
         }
-
-        self.incr_counts(false);
     }
 
     pub(crate) fn flush(&self, guard: &Guard) {
         self.push_to_global(guard);
-        self.incr_counts(true);
+        self.must_collect.set(true);
+        if self.collecting.get() {
+            self.repin_without_collect();
+        }
     }
 
     pub(crate) fn push_to_global(&self, guard: &Guard) {
@@ -506,17 +484,16 @@ impl Local {
 
     #[inline]
     pub(crate) fn collect_if_scheduled(&self) {
-        if self.collecting.get() {
-            return;
-        }
-        if self.must_collect.get() {
-            self.must_collect.set(false);
-            let guard = self.pin();
-            self.global().collect(&guard);
-            // If the `collect` above has scheduled a collection again, by calling `unpin` in
-            // `Guard::drop`, this function will be called again.
-            drop(guard);
-        }
+        self.with_collecting(|| {
+            while self.must_collect.get() {
+                self.must_collect.set(false);
+                let guard = self.pin();
+                self.global().collect(&guard);
+                // If the `collect` above has scheduled a collection again, by calling `unpin` in
+                // `Guard::drop`, this function will be called again.
+                drop(guard);
+            }
+        });
     }
 
     /// Unpins the `Local`.

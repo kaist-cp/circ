@@ -255,7 +255,7 @@ impl Cs for CsEBR {
             if T::UNIQUE_OUTDEGREE {
                 dispose_list(inner, counter, cs);
             } else {
-                dispose_general_node(inner, 0, &counter, cs);
+                dispose_general_node(inner, 0, counter, cs);
             }
         });
     }
