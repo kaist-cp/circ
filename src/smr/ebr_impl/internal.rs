@@ -308,6 +308,7 @@ pub(crate) struct Local {
     handle_count: Cell<usize>,
 
     /// This is just an auxilliary counter that sometimes kicks off collection.
+    advance_count: Cell<usize>,
     manual_count: Cell<usize>,
 
     must_collect: Cell<bool>,
@@ -330,6 +331,8 @@ fn local_size() {
 }
 
 impl Local {
+    const COUNTS_BETWEEN_ADVANCE: usize = 64;
+
     /// Registers a new `Local` in the provided `Global`.
     pub(crate) fn register(collector: &Collector) -> LocalHandle {
         unsafe {
@@ -341,6 +344,7 @@ impl Local {
                 bag: UnsafeCell::new(Bag::new()),
                 guard_count: Cell::new(0),
                 handle_count: Cell::new(1),
+                advance_count: Cell::new(0),
                 manual_count: Cell::new(0),
                 must_collect: Cell::new(false),
                 collecting: Cell::new(false),
@@ -388,20 +392,14 @@ impl Local {
         while let Err(d) = bag.try_push(deferred) {
             self.global().push_bag(bag, guard);
             deferred = d;
-
-            self.must_collect.set(true);
-            if self.collecting.get() {
-                self.repin_without_collect();
-            }
+            self.schedule_collection();
         }
+        self.incr_advance(guard);
     }
 
     pub(crate) fn flush(&self, guard: &Guard) {
         self.push_to_global(guard);
-        self.must_collect.set(true);
-        if self.collecting.get() {
-            self.repin_without_collect();
-        }
+        self.schedule_collection();
     }
 
     pub(crate) fn push_to_global(&self, guard: &Guard) {
@@ -409,6 +407,22 @@ impl Local {
 
         if !bag.is_empty() {
             self.global().push_bag(bag, guard);
+        }
+    }
+
+    pub(crate) fn schedule_collection(&self) {
+        self.must_collect.set(true);
+        if self.collecting.get() {
+            self.repin_without_collect();
+        }
+    }
+
+    pub(crate) fn incr_advance(&self, guard: &Guard) {
+        let advance_count = self.advance_count.get().wrapping_add(1);
+        self.advance_count.set(advance_count);
+
+        if advance_count % Self::COUNTS_BETWEEN_ADVANCE == 0 {
+            self.global().try_advance(&guard);
         }
     }
 
@@ -476,36 +490,32 @@ impl Local {
                 if new_epoch.value() == self.global().epoch.load(Ordering::Acquire).value() {
                     break;
                 }
+                self.epoch.store(Epoch::starting(), Ordering::Release);
             }
         }
 
         guard
     }
 
-    #[inline]
-    pub(crate) fn collect_if_scheduled(&self) {
-        self.with_collecting(|| {
-            while self.must_collect.get() {
-                self.must_collect.set(false);
-                let guard = self.pin();
-                self.global().collect(&guard);
-                // If the `collect` above has scheduled a collection again, by calling `unpin` in
-                // `Guard::drop`, this function will be called again.
-                drop(guard);
-            }
-        });
-    }
-
     /// Unpins the `Local`.
     #[inline]
     pub(crate) fn unpin(&self) {
         let guard_count = self.guard_count.get();
-        self.guard_count.set(guard_count - 1);
+        if guard_count == 1 {
+            self.with_collecting(|| {
+                while self.must_collect.get() {
+                    self.must_collect.set(false);
+                    debug_assert!(self.epoch.load(Ordering::Relaxed).is_pinned());
+                    let guard = ManuallyDrop::new(Guard { local: self });
+                    self.global().collect(&guard);
+                    self.repin_without_collect();
+                }
+            });
+        }
 
+        self.guard_count.set(guard_count - 1);
         if guard_count == 1 {
             self.epoch.store(Epoch::starting(), Ordering::Release);
-
-            self.collect_if_scheduled();
 
             if self.handle_count.get() == 0 {
                 self.finalize();

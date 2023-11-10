@@ -420,12 +420,14 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
 
     let curr_epoch = default_collector().global_epoch().value();
     let modu: Modular<EPOCH_WIDTH> = Modular::new(curr_epoch as isize + 1);
+    let mut outgoings = Vec::new();
 
     // Note that checking whether it is a root is necessary, because if `node_epoch` is
     // old enough, `modu.le` may return false.
     if depth == 0 || modu.le(node_epoch as _, curr_epoch as isize - 3) {
         // The current node is immediately reclaimable.
-        for next in rc.data().pop_outgoings() {
+        rc.data().pop_outgoings(&mut outgoings);
+        for next in outgoings.drain(..) {
             if next.is_null() {
                 continue;
             }

@@ -14,7 +14,7 @@ pub trait GraphNode<C: Cs + ?Sized> {
 
     /// Returns `Rc`s in this node.
     /// It is safe to return less than the actual amount of `Rc`s.
-    fn pop_outgoings(&self) -> Vec<Rc<Self, C>>
+    fn pop_outgoings(&self, result: &mut Vec<Rc<Self, C>>)
     where
         Self: Sized;
 
