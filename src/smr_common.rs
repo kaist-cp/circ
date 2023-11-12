@@ -61,4 +61,5 @@ pub trait Cs {
     fn increment_weak<T>(inner: &RcInner<T>);
     unsafe fn decrement_weak<T>(inner: &mut RcInner<T>, cs: Option<&Self>);
     fn non_zero<T>(inner: &RcInner<T>) -> bool;
+    fn strong_count<T>(inner: &RcInner<T>) -> u32;
 }

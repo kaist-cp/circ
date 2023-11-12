@@ -10,7 +10,7 @@ use super::hp_impl::{HazardPointer, Thread, DEFAULT_THREAD};
 const DESTRUCTED: u64 = 1 << (u64::BITS - 1);
 const WEAKED: u64 = 1 << (u64::BITS - 2);
 const STRONG: u64 = (1 << 31) - 1;
-const WEAK: u64 = ((1 << 31) - 1) << 30;
+const WEAK: u64 = ((1 << 31) - 1) << 31;
 const COUNT: u64 = 1;
 const WEAK_COUNT: u64 = 1 << 31;
 
@@ -101,7 +101,7 @@ impl Cs for CsHP {
 
     #[inline]
     fn create_object<T>(obj: T, init_strong: u32) -> *mut crate::RcInner<T> {
-        let obj = RcInner::new(obj, init_strong);
+        let obj = RcInner::new(obj, (init_strong as u64) * COUNT + WEAK_COUNT);
         Box::into_raw(Box::new(obj))
     }
 
@@ -258,6 +258,10 @@ impl Cs for CsHP {
     #[inline]
     fn timestamp() -> Option<usize> {
         None
+    }
+
+    fn strong_count<T>(inner: &RcInner<T>) -> u32 {
+        ((inner.state.load(Ordering::Relaxed) & STRONG) / COUNT) as u32
     }
 }
 

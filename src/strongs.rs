@@ -255,7 +255,7 @@ impl<T: GraphNode<C>, C: Cs> AtomicRc<T, C> {
         forget(self);
 
         if let Some(cnt) = ptr.as_mut() {
-            if cnt.has_one_strong() {
+            if C::strong_count(cnt) == 1 {
                 return Some(C::own_object(ptr).into_inner());
             }
             C::decrement_strong(cnt, 1, Some(&C::unprotected()));
@@ -383,7 +383,7 @@ impl<T: GraphNode<C>, C: Cs> Rc<T, C> {
         forget(self);
 
         if let Some(cnt) = ptr.as_mut() {
-            if cnt.has_one_strong() {
+            if C::strong_count(cnt) == 1 {
                 return Some(C::own_object(ptr).into_inner());
             }
             C::decrement_strong(cnt, 1, Some(&C::unprotected()));
@@ -406,6 +406,17 @@ impl<T: GraphNode<C>, C: Cs> Rc<T, C> {
             }
         }
         forget(self);
+    }
+
+    #[inline]
+    pub fn downgrade(&self) -> Weak<T, C> {
+        unsafe {
+            if let Some(cnt) = self.as_ptr().as_raw().as_ref() {
+                C::increment_weak(cnt);
+                return Weak::from_raw(self.ptr);
+            }
+        }
+        Weak::null()
     }
 }
 

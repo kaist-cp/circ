@@ -57,7 +57,7 @@ impl State {
     }
 
     fn with_epoch(self, epoch: usize) -> Self {
-        Self::from_raw(self.inner & !EPOCH | (((epoch as u64) << EPOCH_MASK_HEIGHT) & EPOCH))
+        Self::from_raw((self.inner & !EPOCH) | (((epoch as u64) << EPOCH_MASK_HEIGHT) & EPOCH))
     }
 
     fn add_strong(self, val: u32) -> Self {
@@ -65,6 +65,7 @@ impl State {
     }
 
     fn sub_strong(self, val: u32) -> Self {
+        debug_assert!(self.strong() >= val);
         Self::from_raw(self.inner - (val as u64) * COUNT)
     }
 
@@ -73,11 +74,11 @@ impl State {
     }
 
     fn with_destructed(self, dest: bool) -> Self {
-        Self::from_raw(self.inner & !DESTRUCTED | if dest { DESTRUCTED } else { 0 })
+        Self::from_raw((self.inner & !DESTRUCTED) | if dest { DESTRUCTED } else { 0 })
     }
 
     fn with_weaked(self, weaked: bool) -> Self {
-        Self::from_raw(self.inner & !WEAKED | if weaked { WEAKED } else { 0 })
+        Self::from_raw((self.inner & !WEAKED) | if weaked { WEAKED } else { 0 })
     }
 
     fn as_raw(self) -> u64 {
@@ -220,7 +221,7 @@ impl Cs for CsEBR {
 
     #[inline(always)]
     fn create_object<T>(obj: T, init_strong: u32) -> *mut RcInner<T> {
-        let obj = RcInner::new(obj, init_strong);
+        let obj = RcInner::new(obj, (init_strong as u64) * COUNT + WEAK_COUNT);
         Box::into_raw(Box::new(obj))
     }
 
@@ -310,6 +311,7 @@ impl Cs for CsEBR {
     #[inline]
     unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>) {
         let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
+        debug_assert!(!old.destructed());
         if old.strong() > 0 {
             Self::decrement_strong(inner, 1, None);
         }
@@ -321,7 +323,7 @@ impl Cs for CsEBR {
                 Ordering::SeqCst,
             ) {
                 Ok(_) => {
-                    dispose(inner);
+                    ManuallyDrop::drop(&mut inner.storage);
                     if old.weaked() {
                         Self::decrement_weak(inner, None);
                     } else {
@@ -376,7 +378,8 @@ impl Cs for CsEBR {
 
     #[inline]
     unsafe fn decrement_weak<T>(inner: &mut RcInner<T>, cs: Option<&Self>) {
-        if inner.state.fetch_sub(WEAK_COUNT, Ordering::SeqCst) == WEAK_COUNT {
+        debug_assert!(State::from_raw(inner.state.load(Ordering::SeqCst)).weak() >= 1);
+        if State::from_raw(inner.state.fetch_sub(WEAK_COUNT, Ordering::SeqCst)).weak() == 1 {
             cs.defer(inner, |inner| Self::try_dealloc(inner));
         }
     }
@@ -401,6 +404,10 @@ impl Cs for CsEBR {
     #[inline]
     fn timestamp() -> Option<usize> {
         Some(default_collector().global_epoch().value())
+    }
+
+    fn strong_count<T>(inner: &RcInner<T>) -> u32 {
+        State::from_raw(inner.state.load(Ordering::Relaxed)).strong()
     }
 }
 

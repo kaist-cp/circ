@@ -224,23 +224,6 @@ impl<T, C: Cs> Weak<T, C> {
     }
 
     #[inline(always)]
-    pub fn from_strong<'g, P>(ptr: &P) -> Self
-    where
-        P: StrongPtr<T, C>,
-    {
-        unsafe {
-            if let Some(cnt) = ptr.as_ptr().as_raw().as_ref() {
-                C::increment_weak(cnt);
-                return Self {
-                    ptr: ptr.as_ptr(),
-                    _marker: PhantomData,
-                };
-            }
-        }
-        Self::null()
-    }
-
-    #[inline(always)]
     pub fn clone(&self) -> Self {
         let weak = Self {
             ptr: self.ptr,
