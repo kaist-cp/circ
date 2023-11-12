@@ -224,8 +224,8 @@ impl<T> Drop for Queue<T> {
 
 #[cfg(all(test, not(crossbeam_loom)))]
 mod test {
-    use super::pin;
     use super::*;
+    use crate::ebr_impl::pin;
     use crossbeam_utils::thread;
 
     struct Queue<T> {

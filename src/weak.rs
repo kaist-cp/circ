@@ -53,13 +53,13 @@ impl<T, C: Cs> AtomicWeak<T, C> {
     }
 
     #[inline]
-    pub fn store<P: WeakPtr<T, C>>(&self, ptr: P, order: Ordering) {
+    pub fn store<P: WeakPtr<T, C>>(&self, ptr: P, order: Ordering, cs: &C) {
         let new_ptr = ptr.as_ptr();
         ptr.into_weak_count();
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                C::decrement_weak(cnt);
+                C::decrement_weak(cnt, Some(cs));
             }
         }
     }
@@ -188,7 +188,7 @@ impl<T, C: Cs> Drop for AtomicWeak<T, C> {
         let ptr = self.link.load(Ordering::SeqCst);
         unsafe {
             if let Some(cnt) = ptr.as_raw().as_mut() {
-                C::decrement_weak(cnt);
+                C::decrement_weak(cnt, None);
             }
         }
     }
@@ -290,7 +290,7 @@ impl<T, C: Cs> Drop for Weak<T, C> {
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                C::decrement_weak(cnt);
+                C::decrement_weak(cnt, None);
             }
         }
     }

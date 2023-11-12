@@ -3,7 +3,7 @@
 /// # Examples
 ///
 /// ```
-/// use crossbeam_epoch::Collector;
+/// use circ::ebr_impl::Collector;
 ///
 /// let collector = Collector::new();
 ///
@@ -129,7 +129,7 @@ mod tests {
 
     use crossbeam_utils::thread;
 
-    use super::{Collector, Owned};
+    use crate::ebr_impl::{Collector, Owned};
 
     const NUM_THREADS: usize = 8;
 

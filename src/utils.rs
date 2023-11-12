@@ -1,19 +1,22 @@
 use core::mem;
-use std::{hash::Hash, mem::ManuallyDrop, ptr::null_mut, sync::atomic::AtomicU32};
+use std::{
+    hash::Hash,
+    mem::ManuallyDrop,
+    ptr::null_mut,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 /// An instance of an object of type T with an atomic reference count.
 pub struct RcInner<T> {
     pub storage: ManuallyDrop<T>,
-    pub strong: AtomicU32,
-    pub weak: AtomicU32,
+    pub state: AtomicU64,
 }
 
 impl<T> RcInner<T> {
     pub fn new(val: T, init_strong: u32) -> Self {
         Self {
             storage: ManuallyDrop::new(val),
-            strong: AtomicU32::new(init_strong),
-            weak: AtomicU32::new(1),
+            state: AtomicU64::new(init_strong as _),
         }
     }
 
@@ -27,6 +30,10 @@ impl<T> RcInner<T> {
 
     pub fn into_inner(self) -> T {
         ManuallyDrop::into_inner(self.storage)
+    }
+
+    pub fn has_one_strong(&self) -> bool {
+        self.state.load(Ordering::Acquire) == 0
     }
 }
 

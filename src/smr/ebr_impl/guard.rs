@@ -16,7 +16,7 @@ use super::internal::Local;
 /// The current thread is pinned by calling [`pin`], which returns a new guard:
 ///
 /// ```
-/// use crossbeam_epoch as epoch;
+/// use circ::ebr_impl as epoch;
 ///
 /// // It is often convenient to prefix a call to `pin` with a `&` in order to create a reference.
 /// // This is not really necessary, but makes passing references to the guard a bit easier.
@@ -31,7 +31,7 @@ use super::internal::Local;
 /// For example:
 ///
 /// ```
-/// use crossbeam_epoch::{self as epoch, Atomic};
+/// use circ::ebr_impl::{self as epoch, Atomic};
 /// use std::sync::atomic::Ordering::SeqCst;
 ///
 /// // Create a heap-allocated number.
@@ -57,7 +57,7 @@ use super::internal::Local;
 /// one is dropped:
 ///
 /// ```
-/// use crossbeam_epoch as epoch;
+/// use circ::ebr_impl as epoch;
 ///
 /// let guard1 = epoch::pin();
 /// let guard2 = epoch::pin();
@@ -122,7 +122,7 @@ impl Guard {
     /// borrows.
     ///
     /// ```
-    /// use crossbeam_epoch as epoch;
+    /// use circ::ebr_impl as epoch;
     ///
     /// let guard = &epoch::pin();
     /// let message = "Hello!";
@@ -159,7 +159,7 @@ impl Guard {
     /// consequently drop all their references on the stack.
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Owned};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new("foo");
@@ -246,7 +246,7 @@ impl Guard {
     /// consequently drop all their references on the stack.
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Owned};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new("foo");
@@ -285,7 +285,7 @@ impl Guard {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch as epoch;
+    /// use circ::ebr_impl as epoch;
     ///
     /// let guard = &epoch::pin();
     /// guard.defer(move || {
@@ -311,7 +311,7 @@ impl Guard {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(777);
@@ -346,7 +346,7 @@ impl Guard {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     /// use std::thread;
     /// use std::time::Duration;
@@ -396,7 +396,7 @@ impl Guard {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch as epoch;
+    /// use circ::ebr_impl as epoch;
     ///
     /// let guard1 = epoch::pin();
     /// let guard2 = epoch::pin();
@@ -472,7 +472,7 @@ impl fmt::Debug for Guard {
 /// # Examples
 ///
 /// ```
-/// use crossbeam_epoch::{self as epoch, Atomic};
+/// use circ::ebr_impl::{self as epoch, Atomic};
 /// use std::sync::atomic::Ordering::Relaxed;
 ///
 /// let a = Atomic::new(7);
@@ -503,7 +503,7 @@ impl fmt::Debug for Guard {
 /// is very helpful.
 ///
 /// ```
-/// use crossbeam_epoch::{self as epoch, Atomic};
+/// use circ::ebr_impl::{self as epoch, Atomic};
 /// use std::mem::ManuallyDrop;
 /// use std::sync::atomic::Ordering::Relaxed;
 ///

@@ -298,7 +298,7 @@ impl<'g, T: 'g, C: IsElement<T>> Iterator for Iter<'g, T, C> {
 #[cfg(all(test, not(crossbeam_loom)))]
 mod tests {
     use super::*;
-    use super::{Collector, Owned};
+    use crate::ebr_impl::{Collector, Owned};
     use crossbeam_utils::thread;
     use std::sync::Barrier;
 

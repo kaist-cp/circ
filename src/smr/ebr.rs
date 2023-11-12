@@ -9,9 +9,17 @@ use crate::{Acquired, Cs, GraphNode, TaggedCnt, HIGH_TAG_WIDTH};
 use crate::{Pointer, Validatable};
 
 const EPOCH_WIDTH: u32 = HIGH_TAG_WIDTH;
-const EPOCH_MASK_HEIGHT: u32 = u32::BITS - EPOCH_WIDTH;
-const EPOCH_MASK: u32 = ((1 << EPOCH_WIDTH) - 1) << EPOCH_MASK_HEIGHT;
-const DESTRUCTED_MASK: u32 = 1 << (EPOCH_MASK_HEIGHT - 1);
+const EPOCH_MASK_HEIGHT: u32 = u64::BITS - EPOCH_WIDTH;
+const EPOCH: u64 = ((1 << EPOCH_WIDTH) - 1) << EPOCH_MASK_HEIGHT;
+const DESTRUCTED: u64 = 1 << (EPOCH_MASK_HEIGHT - 1);
+const WEAKED: u64 = 1 << (EPOCH_MASK_HEIGHT - 2);
+const TOTAL_COUNT_WIDTH: u32 = u64::BITS - EPOCH_WIDTH - 2;
+const WEAK_WIDTH: u32 = TOTAL_COUNT_WIDTH / 2;
+const STRONG_WIDTH: u32 = TOTAL_COUNT_WIDTH - WEAK_WIDTH;
+const STRONG: u64 = (1 << STRONG_WIDTH) - 1;
+const WEAK: u64 = ((1 << WEAK_WIDTH) - 1) << STRONG_WIDTH;
+const COUNT: u64 = 1;
+const WEAK_COUNT: u64 = 1 << STRONG_WIDTH;
 
 thread_local! {
     static DISPOSE_COUNTER: Cell<usize> = Cell::new(0);
@@ -19,48 +27,61 @@ thread_local! {
 
 /// Effectively wraps the presence of epoch and destruction bits.
 #[derive(Clone, Copy)]
-struct StrongCount {
-    inner: u32,
+struct State {
+    inner: u64,
 }
 
-impl StrongCount {
-    fn from_raw(inner: u32) -> Self {
+impl State {
+    fn from_raw(inner: u64) -> Self {
         Self { inner }
     }
 
-    fn from_parts(epoch: usize, dest: bool, count: u32) -> Self {
-        let epoch = ((epoch & ((1 << EPOCH_WIDTH) - 1)) as u32) << EPOCH_MASK_HEIGHT;
-        let dest = if dest { DESTRUCTED_MASK } else { 0 };
-        Self::from_raw(epoch | dest | count)
-    }
-
     fn epoch(self) -> u32 {
-        (self.inner & EPOCH_MASK) >> EPOCH_MASK_HEIGHT
+        ((self.inner & EPOCH) >> EPOCH_MASK_HEIGHT) as u32
     }
 
-    fn count(self) -> u32 {
-        self.inner & !EPOCH_MASK & !DESTRUCTED_MASK
+    fn strong(self) -> u32 {
+        ((self.inner & STRONG) / COUNT) as u32
+    }
+
+    fn weak(self) -> u32 {
+        ((self.inner & WEAK) / WEAK_COUNT) as u32
     }
 
     fn destructed(self) -> bool {
-        (self.inner & DESTRUCTED_MASK) != 0
+        (self.inner & DESTRUCTED) != 0
+    }
+
+    fn weaked(&self) -> bool {
+        (self.inner & WEAKED) != 0
     }
 
     fn with_epoch(self, epoch: usize) -> Self {
-        Self::from_parts(epoch, self.destructed(), self.count())
+        Self::from_raw(self.inner & !EPOCH | (((epoch as u64) << EPOCH_MASK_HEIGHT) & EPOCH))
     }
 
-    fn add_count(self, val: u32) -> Self {
-        Self::from_parts(self.epoch() as usize, self.destructed(), self.count() + val)
+    fn add_strong(self, val: u32) -> Self {
+        Self::from_raw(self.inner + (val as u64) * COUNT)
     }
 
-    fn sub_count(self, val: u32) -> Self {
-        debug_assert!(self.count() >= val);
-        Self::from_parts(self.epoch() as usize, self.destructed(), self.count() - val)
+    fn sub_strong(self, val: u32) -> Self {
+        Self::from_raw(self.inner - (val as u64) * COUNT)
+    }
+
+    fn add_weak(self, val: u32) -> Self {
+        Self::from_raw(self.inner + (val as u64) * WEAK_COUNT)
     }
 
     fn with_destructed(self, dest: bool) -> Self {
-        Self::from_parts(self.epoch() as usize, dest, self.count())
+        Self::from_raw(self.inner & !DESTRUCTED | if dest { DESTRUCTED } else { 0 })
+    }
+
+    fn with_weaked(self, weaked: bool) -> Self {
+        Self::from_raw(self.inner & !WEAKED | if weaked { WEAKED } else { 0 })
+    }
+
+    fn as_raw(self) -> u64 {
+        self.inner
     }
 }
 
@@ -223,20 +244,6 @@ impl Cs for CsEBR {
         ptr
     }
 
-    #[inline(always)]
-    unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
-    where
-        F: FnOnce(&mut RcInner<T>),
-    {
-        debug_assert!(!ptr.is_null());
-        let cnt = &mut *ptr;
-        if let Some(guard) = &self.guard {
-            guard.defer_unchecked(move || f(cnt));
-        } else {
-            f(cnt);
-        }
-    }
-
     #[inline]
     fn clear(&mut self) {
         if let Some(guard) = &mut self.guard {
@@ -245,31 +252,15 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    unsafe fn dispose<T>(inner: &mut RcInner<T>)
-    where
-        T: GraphNode<Self>,
-        Self: Sized,
-    {
-        let cs = &CsEBR::new();
-        DISPOSE_COUNTER.with(|counter| {
-            if T::UNIQUE_OUTDEGREE {
-                dispose_list(inner, counter, cs);
-            } else {
-                dispose_general_node(inner, 0, counter, cs);
-            }
-        });
-    }
-
-    #[inline]
     fn increment_strong<T>(inner: &RcInner<T>) -> bool {
-        let val = StrongCount::from_raw(inner.strong.fetch_add(1, Ordering::SeqCst));
+        let val = State::from_raw(inner.state.fetch_add(COUNT, Ordering::SeqCst));
         if val.destructed() {
             return false;
         }
-        if val.count() == 0 {
+        if val.strong() == 0 {
             // The previous fetch_add created a permission to run decrement again.
             // Now create an actual reference.
-            inner.strong.fetch_add(1, Ordering::SeqCst);
+            inner.state.fetch_add(COUNT, Ordering::SeqCst);
         }
         return true;
     }
@@ -283,26 +274,26 @@ impl Cs for CsEBR {
         let epoch = Self::timestamp().unwrap();
         // Should mark the current epoch on the strong count with CAS.
         let hit_zero = loop {
-            let curr = StrongCount::from_raw(inner.strong.load(Ordering::SeqCst));
-            debug_assert!(curr.count() >= count);
+            let curr = State::from_raw(inner.state.load(Ordering::SeqCst));
+            debug_assert!(curr.strong() >= count);
             if inner
-                .strong
+                .state
                 .compare_exchange(
-                    curr.inner,
-                    curr.with_epoch(epoch).sub_count(count).inner,
+                    curr.as_raw(),
+                    curr.with_epoch(epoch).sub_strong(count).as_raw(),
                     Ordering::SeqCst,
                     Ordering::SeqCst,
                 )
                 .is_ok()
             {
-                break curr.count() == count;
+                break curr.strong() == count;
             }
         };
 
-        // Trigger a collection periodically.
+        // `incr_manual_collection` periodically triggers a collection.
         if let Some(cs) = cs {
             if hit_zero {
-                Self::schedule_try_destruct(inner, Some(cs));
+                cs.defer(inner, |inner| Self::try_destruct(inner));
             }
             if let Some(guard) = cs.guard.as_ref() {
                 guard.incr_manual_collection();
@@ -310,83 +301,118 @@ impl Cs for CsEBR {
         } else {
             let cs = Self::new();
             if hit_zero {
-                Self::schedule_try_destruct(inner, Some(&cs));
+                cs.defer(inner, |inner| Self::try_destruct(inner));
             }
             cs.guard.as_ref().unwrap().incr_manual_collection();
         }
     }
 
     #[inline]
-    unsafe fn schedule_try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>, cs: Option<&Self>) {
-        if let Some(cs) = cs {
-            cs.defer(
-                inner,
-                #[inline(always)]
-                |inner| unsafe { Self::try_destruct(inner) },
-            )
-        } else {
-            Self::new().defer(
-                inner,
-                #[inline(always)]
-                |inner| unsafe { Self::try_destruct(inner) },
-            )
-        }
-    }
-
-    #[inline]
     unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>) {
-        let curr = StrongCount::from_raw(inner.strong.load(Ordering::SeqCst));
-        debug_assert!(!curr.destructed());
-        if curr.count() == 0
-            && inner
-                .strong
-                .compare_exchange(
-                    curr.inner,
-                    curr.with_destructed(true).inner,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                )
-                .is_ok()
-        {
-            Self::dispose(inner);
-        } else {
+        let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
+        if old.strong() > 0 {
             Self::decrement_strong(inner, 1, None);
         }
+        loop {
+            match inner.state.compare_exchange(
+                old.as_raw(),
+                old.with_destructed(true).as_raw(),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    dispose(inner);
+                    if old.weaked() {
+                        Self::decrement_weak(inner, None);
+                    } else {
+                        drop(Self::own_object(inner));
+                    }
+                    return;
+                }
+                Err(curr) => {
+                    let curr = State::from_raw(curr);
+                    if curr.strong() > 0 {
+                        Self::decrement_strong(inner, 1, None);
+                        return;
+                    }
+                    old = curr;
+                }
+            }
+        }
     }
 
     #[inline]
-    fn increment_weak<T>(inner: &RcInner<T>) {
-        inner.weak.fetch_add(1, Ordering::SeqCst);
-    }
-
-    #[inline]
-    unsafe fn decrement_weak<T>(inner: &mut RcInner<T>) {
-        if inner.weak.fetch_sub(1, Ordering::SeqCst) == 1 {
+    unsafe fn try_dealloc<T>(inner: &mut RcInner<T>) {
+        if State::from_raw(inner.state.load(Ordering::SeqCst)).weak() > 0 {
+            Self::decrement_weak(inner, None);
+        } else {
             drop(Self::own_object(inner));
         }
     }
 
     #[inline]
+    fn increment_weak<T>(inner: &RcInner<T>) {
+        let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
+        if old.weaked() {
+            if State::from_raw(inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst)).weak() == 0 {
+                inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst);
+            }
+        } else {
+            // In this case, `increment_weak` must have been called from `Rc::downgrade`,
+            // guaranteeing weak > 0, so it can’t be incremented from 0.
+            loop {
+                match inner.state.compare_exchange(
+                    old.as_raw(),
+                    old.with_weaked(true).add_weak(1).as_raw(),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(curr) => old = State::from_raw(curr),
+                }
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn decrement_weak<T>(inner: &mut RcInner<T>, cs: Option<&Self>) {
+        if inner.state.fetch_sub(WEAK_COUNT, Ordering::SeqCst) == WEAK_COUNT {
+            cs.defer(inner, |inner| Self::try_dealloc(inner));
+        }
+    }
+
+    #[inline]
     fn non_zero<T>(inner: &RcInner<T>) -> bool {
-        let mut curr = StrongCount::from_raw(inner.strong.load(Ordering::SeqCst));
-        if curr.count() == 0 {
-            curr = match inner.strong.compare_exchange(
-                curr.inner,
-                curr.add_count(1).inner,
+        let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
+        while !old.destructed() && old.strong() == 0 {
+            match inner.state.compare_exchange(
+                old.as_raw(),
+                old.add_strong(1).as_raw(),
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
-                Ok(_) => curr.add_count(1),
-                Err(prev) => StrongCount::from_raw(prev),
+                Ok(_) => return true,
+                Err(curr) => old = State::from_raw(curr),
             }
         }
-        !curr.destructed()
+        !old.destructed()
     }
 
     #[inline]
     fn timestamp() -> Option<usize> {
         Some(default_collector().global_epoch().value())
     }
+}
+
+unsafe fn dispose<T: GraphNode<CsEBR>>(inner: *mut RcInner<T>) {
+    let cs = &CsEBR::new();
+    DISPOSE_COUNTER.with(|counter| {
+        if T::UNIQUE_OUTDEGREE {
+            dispose_list(inner, counter, cs);
+        } else {
+            dispose_general_node(inner, 0, counter, cs);
+        }
+    });
 }
 
 unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
@@ -410,13 +436,13 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
 
     if depth >= 1024 {
         // Prevent a potential stack overflow.
-        CsEBR::schedule_try_destruct(rc, Some(cs));
+        cs.defer(rc, |rc| CsEBR::try_destruct(rc));
         return;
     }
 
-    let strong = StrongCount::from_raw(rc.strong.load(Ordering::SeqCst));
-    let node_epoch = strong.epoch();
-    debug_assert_eq!(strong.count(), 0);
+    let state = State::from_raw(rc.state.load(Ordering::SeqCst));
+    let node_epoch = state.epoch();
+    debug_assert_eq!(state.strong(), 0);
 
     let curr_epoch = default_collector().global_epoch().value();
     let modu: Modular<EPOCH_WIDTH> = Modular::new(curr_epoch as isize + 1);
@@ -438,16 +464,16 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
 
             // Decrement next node's strong count and update its epoch.
             let next_cnt = loop {
-                let cnt_curr = StrongCount::from_raw(next_ref.strong.load(Ordering::SeqCst));
+                let cnt_curr = State::from_raw(next_ref.state.load(Ordering::SeqCst));
                 let next_epoch =
                     modu.max(&[node_epoch as _, link_epoch as _, cnt_curr.epoch() as _]);
-                let cnt_next = cnt_curr.sub_count(1).with_epoch(next_epoch as _);
+                let cnt_next = cnt_curr.sub_strong(1).with_epoch(next_epoch as _);
 
                 if next_ref
-                    .strong
+                    .state
                     .compare_exchange(
-                        cnt_curr.inner,
-                        cnt_next.inner,
+                        cnt_curr.as_raw(),
+                        cnt_next.as_raw(),
                         Ordering::SeqCst,
                         Ordering::SeqCst,
                     )
@@ -458,17 +484,17 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
             };
 
             // If the reference count hit zero, try dispose it recursively.
-            if next_cnt.count() == 0 {
+            if next_cnt.strong() == 0 {
                 dispose_general_node(next_ptr.as_raw(), depth + 1, counter, cs);
             }
         }
         unsafe {
             ManuallyDrop::drop(&mut rc.storage);
-            CsEBR::decrement_weak(rc);
+            CsEBR::decrement_weak(rc, Some(cs));
         }
     } else {
         // It is likely to be unsafe to reclaim right now.
-        CsEBR::schedule_try_destruct(rc, Some(cs));
+        cs.defer(rc, |rc| CsEBR::try_destruct(rc));
     }
 }
 
@@ -491,9 +517,9 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
             curr_epoch = default_collector().global_epoch().value();
             modu = Modular::new(curr_epoch as isize + 1);
         }
-        let strong = StrongCount::from_raw(rc.strong.load(Ordering::SeqCst));
-        let node_epoch = strong.epoch();
-        debug_assert_eq!(strong.count(), 0);
+        let state = State::from_raw(rc.state.load(Ordering::SeqCst));
+        let node_epoch = state.epoch();
+        debug_assert_eq!(state.strong(), 0);
 
         // Note that checking whether it is a root is necessary, because if `node_epoch` is
         // old enough, `modu.le` may return false.
@@ -507,13 +533,13 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
 
                 // Decrement next node's strong count and update its epoch.
                 let next_cnt = loop {
-                    let cnt_curr = StrongCount::from_raw(next_ref.strong.load(Ordering::SeqCst));
+                    let cnt_curr = State::from_raw(next_ref.state.load(Ordering::SeqCst));
                     let next_epoch =
                         modu.max(&[node_epoch as _, link_epoch as _, cnt_curr.epoch() as _]);
-                    let cnt_next = cnt_curr.sub_count(1).with_epoch(next_epoch as _);
+                    let cnt_next = cnt_curr.sub_strong(1).with_epoch(next_epoch as _);
 
                     if next_ref
-                        .strong
+                        .state
                         .compare_exchange(
                             cnt_curr.inner,
                             cnt_next.inner,
@@ -527,17 +553,51 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
                 };
 
                 // If the reference count hit zero, try dispose it.
-                if next_cnt.count() == 0 {
+                if next_cnt.strong() == 0 {
                     ptr = Some(next_ptr.as_raw());
                 }
             }
             unsafe {
                 ManuallyDrop::drop(&mut rc.storage);
-                CsEBR::decrement_weak(rc);
+                CsEBR::decrement_weak(rc, Some(cs));
             }
         } else {
             // It is likely to be unsafe to reclaim right now.
-            CsEBR::schedule_try_destruct(rc, Some(cs));
+            cs.defer(rc, |rc| CsEBR::try_destruct(rc));
+        }
+    }
+}
+
+trait Deferable {
+    unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
+    where
+        F: FnOnce(&mut RcInner<T>);
+}
+
+impl Deferable for CsEBR {
+    unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
+    where
+        F: FnOnce(&mut RcInner<T>),
+    {
+        debug_assert!(!ptr.is_null());
+        let cnt = &mut *ptr;
+        if let Some(guard) = &self.guard {
+            guard.defer_unchecked(move || f(cnt));
+        } else {
+            f(cnt);
+        }
+    }
+}
+
+impl Deferable for Option<&CsEBR> {
+    unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
+    where
+        F: FnOnce(&mut RcInner<T>),
+    {
+        if let Some(cs) = self {
+            cs.defer(ptr, f)
+        } else {
+            CsEBR::new().defer(ptr, f)
         }
     }
 }

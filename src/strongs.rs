@@ -255,7 +255,7 @@ impl<T: GraphNode<C>, C: Cs> AtomicRc<T, C> {
         forget(self);
 
         if let Some(cnt) = ptr.as_mut() {
-            if cnt.strong.load(Ordering::Relaxed) == 1 {
+            if cnt.has_one_strong() {
                 return Some(C::own_object(ptr).into_inner());
             }
             C::decrement_strong(cnt, 1, Some(&C::unprotected()));
@@ -383,7 +383,7 @@ impl<T: GraphNode<C>, C: Cs> Rc<T, C> {
         forget(self);
 
         if let Some(cnt) = ptr.as_mut() {
-            if cnt.strong.load(Ordering::Relaxed) == 1 {
+            if cnt.has_one_strong() {
                 return Some(C::own_object(ptr).into_inner());
             }
             C::decrement_strong(cnt, 1, Some(&C::unprotected()));

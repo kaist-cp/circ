@@ -141,7 +141,7 @@ pub(crate) fn decompose_tag<T: ?Sized + Pointable>(data: usize) -> (usize, usize
 ///
 /// ```
 /// use std::mem::MaybeUninit;
-/// use crossbeam_epoch::Owned;
+/// use circ::ebr_impl::Owned;
 ///
 /// let o = Owned::<[MaybeUninit<i32>]>::init(10); // allocating [i32; 10]
 /// ```
@@ -300,7 +300,7 @@ impl<T> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Atomic;
+    /// use circ::ebr_impl::Atomic;
     ///
     /// let a = Atomic::new(1234);
     /// # unsafe { drop(a.into_owned()); } // avoid leak
@@ -316,7 +316,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Atomic;
+    /// use circ::ebr_impl::Atomic;
     ///
     /// let a = Atomic::<i32>::init(1234);
     /// # unsafe { drop(a.into_owned()); } // avoid leak
@@ -338,7 +338,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Atomic;
+    /// use circ::ebr_impl::Atomic;
     ///
     /// let a = Atomic::<i32>::null();
     /// ```
@@ -367,7 +367,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -394,7 +394,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     ///
     /// let a = Atomic::new(1234);
     /// let guard = &epoch::pin();
@@ -413,11 +413,11 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{Atomic, Owned, Shared};
+    /// use circ::ebr_impl::{Atomic, Owned, Shared};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
-    /// # unsafe { drop(a.load(SeqCst, &crossbeam_epoch::pin()).into_owned()); } // avoid leak
+    /// # unsafe { drop(a.load(SeqCst, &circ::ebr_impl::pin()).into_owned()); } // avoid leak
     /// a.store(Shared::null(), SeqCst);
     /// a.store(Owned::new(1234), SeqCst);
     /// # unsafe { drop(a.into_owned()); } // avoid leak
@@ -435,7 +435,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Shared};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Shared};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -467,7 +467,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Owned, Shared};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Owned, Shared};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -524,7 +524,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Owned, Shared};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Owned, Shared};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -605,7 +605,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -666,7 +666,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     ///
     /// ```
     /// # #![allow(deprecated)]
-    /// use crossbeam_epoch::{self as epoch, Atomic, Owned, Shared};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Owned, Shared};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -725,7 +725,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     ///
     /// ```
     /// # #![allow(deprecated)]
-    /// use crossbeam_epoch::{self as epoch, Atomic, Owned, Shared};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Owned, Shared};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -784,7 +784,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Shared};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Shared};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::<i32>::from(Shared::null().with_tag(3));
@@ -807,7 +807,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Shared};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Shared};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::<i32>::from(Shared::null().with_tag(1));
@@ -830,7 +830,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Shared};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Shared};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::<i32>::from(Shared::null().with_tag(1));
@@ -861,7 +861,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     ///
     /// ```rust
     /// # use std::mem;
-    /// # use crossbeam_epoch::Atomic;
+    /// # use circ::ebr_impl::Atomic;
     /// struct DataStructure {
     ///     ptr: Atomic<usize>,
     /// }
@@ -905,7 +905,7 @@ impl<T: ?Sized + Pointable> Atomic<T> {
     ///
     /// ```rust
     /// # use std::mem;
-    /// # use crossbeam_epoch::Atomic;
+    /// # use circ::ebr_impl::Atomic;
     /// struct DataStructure {
     ///     ptr: Atomic<usize>,
     /// }
@@ -980,7 +980,7 @@ impl<T: ?Sized + Pointable> From<Owned<T>> for Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{Atomic, Owned};
+    /// use circ::ebr_impl::{Atomic, Owned};
     ///
     /// let a = Atomic::<i32>::from(Owned::new(1234));
     /// # unsafe { drop(a.into_owned()); } // avoid leak
@@ -1010,7 +1010,7 @@ impl<'g, T: ?Sized + Pointable> From<Shared<'g, T>> for Atomic<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{Atomic, Shared};
+    /// use circ::ebr_impl::{Atomic, Shared};
     ///
     /// let a = Atomic::<i32>::from(Shared::<i32>::null());
     /// ```
@@ -1026,7 +1026,7 @@ impl<T> From<*const T> for Atomic<T> {
     ///
     /// ```
     /// use std::ptr;
-    /// use crossbeam_epoch::Atomic;
+    /// use circ::ebr_impl::Atomic;
     ///
     /// let a = Atomic::<i32>::from(ptr::null::<i32>());
     /// ```
@@ -1102,7 +1102,7 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Owned;
+    /// use circ::ebr_impl::Owned;
     ///
     /// let o = unsafe { Owned::from_raw(Box::into_raw(Box::new(1234))) };
     /// ```
@@ -1117,7 +1117,7 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Owned;
+    /// use circ::ebr_impl::Owned;
     ///
     /// let o = Owned::new(1234);
     /// let b: Box<i32> = o.into_box();
@@ -1134,7 +1134,7 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Owned;
+    /// use circ::ebr_impl::Owned;
     ///
     /// let o = Owned::new(1234);
     /// ```
@@ -1149,7 +1149,7 @@ impl<T: ?Sized + Pointable> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Owned;
+    /// use circ::ebr_impl::Owned;
     ///
     /// let o = Owned::<i32>::init(1234);
     /// ```
@@ -1162,7 +1162,7 @@ impl<T: ?Sized + Pointable> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Owned};
+    /// use circ::ebr_impl::{self as epoch, Owned};
     ///
     /// let o = Owned::new(1234);
     /// let guard = &epoch::pin();
@@ -1179,7 +1179,7 @@ impl<T: ?Sized + Pointable> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Owned;
+    /// use circ::ebr_impl::Owned;
     ///
     /// assert_eq!(Owned::new(1234).tag(), 0);
     /// ```
@@ -1194,7 +1194,7 @@ impl<T: ?Sized + Pointable> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Owned;
+    /// use circ::ebr_impl::Owned;
     ///
     /// let o = Owned::new(0u64);
     /// assert_eq!(o.tag(), 0);
@@ -1265,7 +1265,7 @@ impl<T> From<Box<T>> for Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Owned;
+    /// use circ::ebr_impl::Owned;
     ///
     /// let o = unsafe { Owned::from_raw(Box::into_raw(Box::new(1234))) };
     /// ```
@@ -1341,7 +1341,7 @@ impl<'g, T> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Owned};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let o = Owned::new(1234);
@@ -1365,7 +1365,7 @@ impl<'g, T: ?Sized + Pointable> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Shared;
+    /// use circ::ebr_impl::Shared;
     ///
     /// let p = Shared::<i32>::null();
     /// assert!(p.is_null());
@@ -1382,7 +1382,7 @@ impl<'g, T: ?Sized + Pointable> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Owned};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::null();
@@ -1418,7 +1418,7 @@ impl<'g, T: ?Sized + Pointable> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -1450,7 +1450,7 @@ impl<'g, T: ?Sized + Pointable> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(vec![1, 2, 3, 4]);
@@ -1497,7 +1497,7 @@ impl<'g, T: ?Sized + Pointable> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -1531,7 +1531,7 @@ impl<'g, T: ?Sized + Pointable> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -1556,7 +1556,7 @@ impl<'g, T: ?Sized + Pointable> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(1234);
@@ -1581,7 +1581,7 @@ impl<'g, T: ?Sized + Pointable> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic, Owned};
+    /// use circ::ebr_impl::{self as epoch, Atomic, Owned};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::<u64>::from(Owned::new(0u64).with_tag(2));
@@ -1601,7 +1601,7 @@ impl<'g, T: ?Sized + Pointable> Shared<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::{self as epoch, Atomic};
+    /// use circ::ebr_impl::{self as epoch, Atomic};
     /// use std::sync::atomic::Ordering::SeqCst;
     ///
     /// let a = Atomic::new(0u64);
@@ -1629,7 +1629,7 @@ impl<T> From<*const T> for Shared<'_, T> {
     /// # Examples
     ///
     /// ```
-    /// use crossbeam_epoch::Shared;
+    /// use circ::ebr_impl::Shared;
     ///
     /// let p = Shared::from(Box::into_raw(Box::new(1234)) as *const _);
     /// assert!(!p.is_null());
@@ -1700,7 +1700,6 @@ mod tests {
         Shared::<i64>::null().with_tag(7);
     }
 
-    #[rustversion::since(1.61)]
     #[test]
     fn const_atomic_null() {
         use super::Atomic;

@@ -7,7 +7,12 @@ use crate::{Acquired, Cs, GraphNode, RcInner, TaggedCnt, Validatable};
 
 use super::hp_impl::{HazardPointer, Thread, DEFAULT_THREAD};
 
-const DESTRUCTED: u32 = 1 << (u32::BITS - 1);
+const DESTRUCTED: u64 = 1 << (u64::BITS - 1);
+const WEAKED: u64 = 1 << (u64::BITS - 2);
+const STRONG: u64 = (1 << 31) - 1;
+const WEAK: u64 = ((1 << 31) - 1) << 30;
+const COUNT: u64 = 1;
+const WEAK_COUNT: u64 = 1 << 31;
 
 pub struct AcquiredHP<T> {
     hazptr: HazardPointer,
@@ -132,6 +137,137 @@ impl Cs for CsHP {
     }
 
     #[inline]
+    fn clear(&mut self) {
+        // No-op for HP.
+    }
+
+    #[inline]
+    fn increment_strong<T>(inner: &RcInner<T>) -> bool {
+        let val = inner.state.fetch_add(COUNT, Ordering::SeqCst);
+        if (val & DESTRUCTED) != 0 {
+            return false;
+        }
+        if val & STRONG == 0 {
+            // The previous fetch_add created a permission to run decrement again.
+            // Now create an actual reference.
+            inner.state.fetch_add(COUNT, Ordering::SeqCst);
+        }
+        return true;
+    }
+
+    #[inline]
+    unsafe fn decrement_strong<T: GraphNode<Self>>(
+        inner: &mut RcInner<T>,
+        count: u32,
+        cs: Option<&Self>,
+    ) {
+        let count = count as u64 * COUNT;
+        if inner.state.fetch_sub(count, Ordering::SeqCst) == count {
+            cs.defer(inner, |inner| Self::try_destruct(inner));
+        }
+    }
+
+    #[inline]
+    unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>) {
+        let mut old = inner.state.load(Ordering::SeqCst);
+        if old & STRONG > 0 {
+            Self::decrement_strong(inner, 1, None);
+        }
+        loop {
+            match inner.state.compare_exchange(
+                old,
+                old | DESTRUCTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    ManuallyDrop::drop(&mut inner.storage);
+                    if old & WEAKED == 0 {
+                        drop(Self::own_object(inner));
+                    } else {
+                        Self::decrement_weak(inner, None);
+                    }
+                    return;
+                }
+                Err(curr) => {
+                    if curr & STRONG > 0 {
+                        Self::decrement_strong(inner, 1, None);
+                        return;
+                    }
+                    old = curr;
+                }
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn try_dealloc<T>(inner: &mut RcInner<T>) {
+        if inner.state.load(Ordering::SeqCst) & WEAK > 0 {
+            Self::decrement_weak(inner, None);
+        } else {
+            drop(Self::own_object(inner));
+        }
+    }
+
+    #[inline]
+    fn increment_weak<T>(inner: &RcInner<T>) {
+        let mut old = inner.state.load(Ordering::SeqCst);
+        if old & WEAKED == 0 {
+            // In this case, `increment_weak` must have been called from `Rc::downgrade`,
+            // guaranteeing weak > 0, so it can’t be incremented from 0.
+            loop {
+                match inner.state.compare_exchange(
+                    old,
+                    (old | WEAKED) + WEAK_COUNT,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(curr) => old = curr,
+                }
+            }
+        } else {
+            if inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst) & WEAK == 0 {
+                inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn decrement_weak<T>(inner: &mut RcInner<T>, cs: Option<&Self>) {
+        if inner.state.fetch_sub(WEAK_COUNT, Ordering::SeqCst) & WEAK == WEAK_COUNT {
+            cs.defer(inner, |inner| Self::try_dealloc(inner));
+        }
+    }
+
+    #[inline]
+    fn non_zero<T>(inner: &RcInner<T>) -> bool {
+        let mut old = inner.state.load(Ordering::SeqCst);
+        while old & (DESTRUCTED | STRONG) == 0 {
+            match inner
+                .state
+                .compare_exchange(old, old + COUNT, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return true,
+                Err(curr) => old = curr,
+            }
+        }
+        old & DESTRUCTED == 0
+    }
+
+    #[inline]
+    fn timestamp() -> Option<usize> {
+        None
+    }
+}
+
+trait Deferable {
+    unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
+    where
+        F: FnOnce(&mut RcInner<T>);
+}
+
+impl Deferable for CsHP {
     unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
         F: FnOnce(&mut RcInner<T>),
@@ -144,100 +280,17 @@ impl Cs for CsHP {
             f(cnt);
         }
     }
+}
 
-    #[inline]
-    fn clear(&mut self) {
-        // No-op for HP.
-    }
-
-    #[inline]
-    unsafe fn dispose<T>(inner: &mut RcInner<T>) {
-        ManuallyDrop::drop(&mut inner.storage);
-        Self::decrement_weak(inner);
-    }
-
-    #[inline]
-    fn increment_strong<T>(inner: &RcInner<T>) -> bool {
-        let val = inner.strong.fetch_add(1, Ordering::SeqCst);
-        if (val & DESTRUCTED) != 0 {
-            return false;
-        }
-        if val == 0 {
-            // The previous fetch_add created a permission to run decrement again.
-            // Now create an actual reference.
-            inner.strong.fetch_add(1, Ordering::SeqCst);
-        }
-        return true;
-    }
-
-    #[inline]
-    unsafe fn decrement_strong<T: GraphNode<Self>>(
-        inner: &mut RcInner<T>,
-        count: u32,
-        cs: Option<&Self>,
-    ) {
-        if inner.strong.fetch_sub(count, Ordering::SeqCst) == count {
-            Self::schedule_try_destruct(inner, cs);
-        }
-    }
-
-    #[inline]
-    unsafe fn schedule_try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>, cs: Option<&Self>) {
-        if let Some(cs) = cs {
-            cs.defer(
-                inner,
-                #[inline(always)]
-                |inner| unsafe { Self::try_destruct(inner) },
-            )
+impl Deferable for Option<&CsHP> {
+    unsafe fn defer<T, F>(&self, ptr: *mut RcInner<T>, f: F)
+    where
+        F: FnOnce(&mut RcInner<T>),
+    {
+        if let Some(cs) = self {
+            cs.defer(ptr, f)
         } else {
-            Self::new().defer(
-                inner,
-                #[inline(always)]
-                |inner| unsafe { Self::try_destruct(inner) },
-            )
+            CsHP::new().defer(ptr, f)
         }
-    }
-
-    #[inline]
-    unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>) {
-        if inner
-            .strong
-            .compare_exchange(0, DESTRUCTED, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            Self::dispose(inner);
-        } else {
-            Self::decrement_strong(inner, 1, None);
-        }
-    }
-
-    #[inline]
-    fn increment_weak<T>(inner: &RcInner<T>) {
-        inner.weak.fetch_add(1, Ordering::SeqCst);
-    }
-
-    #[inline]
-    unsafe fn decrement_weak<T>(inner: &mut RcInner<T>) {
-        if inner.weak.fetch_sub(1, Ordering::SeqCst) == 1 {
-            drop(Self::own_object(inner));
-        }
-    }
-
-    #[inline]
-    fn non_zero<T>(inner: &RcInner<T>) -> bool {
-        let mut curr = inner.strong.load(Ordering::SeqCst);
-        if curr == 0 {
-            curr = inner
-                .strong
-                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-                .err()
-                .unwrap_or(1);
-        }
-        (curr & DESTRUCTED) == 0
-    }
-
-    #[inline]
-    fn timestamp() -> Option<usize> {
-        None
     }
 }
