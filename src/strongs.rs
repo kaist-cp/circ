@@ -583,18 +583,6 @@ impl<T: GraphNode<C>, C: Cs> Snapshot<T, C> {
     pub unsafe fn copy_to(&self, other: &mut Self) {
         self.acquired.copy_to(&mut other.acquired);
     }
-
-    #[inline]
-    pub fn loan(&self) -> (Rc<T, C>, Debt<T, C>) {
-        let ptr = self.acquired.as_ptr();
-        (
-            Rc::from_raw(ptr),
-            Debt {
-                ptr,
-                _marker: PhantomData,
-            },
-        )
-    }
 }
 
 impl<T: GraphNode<C>, C: Cs> Default for Snapshot<T, C> {
@@ -642,27 +630,6 @@ impl<'s, T, C: Cs> Pointer<T> for TaggedSnapshot<'s, T, C> {
     #[inline]
     fn as_ptr(&self) -> TaggedCnt<T> {
         self.inner.acquired.as_ptr().with_tag(self.tag)
-    }
-}
-
-pub struct Debt<T: GraphNode<C>, C: Cs> {
-    ptr: TaggedCnt<T>,
-    _marker: PhantomData<*mut C>,
-}
-
-impl<T: GraphNode<C>, C: Cs> Drop for Debt<T, C> {
-    #[inline]
-    fn drop(&mut self) {
-        panic!("Debt is not repaied!");
-    }
-}
-
-impl<T: GraphNode<C>, C: Cs> Debt<T, C> {
-    #[inline]
-    pub fn repay(self, rc: Rc<T, C>) {
-        assert!(self.ptr == rc.ptr);
-        forget(self);
-        forget(rc);
     }
 }
 
