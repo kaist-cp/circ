@@ -211,6 +211,7 @@ impl Global {
     pub(crate) fn collect(&self, guard: &Guard) {
         if let Some(local) = unsafe { guard.local.as_ref() } {
             local.manual_count.set(0);
+            local.pin_count.set(0);
         }
         self.try_advance(guard);
 
@@ -309,6 +310,8 @@ pub(crate) struct Local {
 
     /// This is just an auxilliary counter that sometimes kicks off collection.
     advance_count: Cell<usize>,
+    prev_epoch: Cell<Epoch>,
+    pin_count: Cell<usize>,
     manual_count: Cell<usize>,
 
     must_collect: Cell<bool>,
@@ -331,6 +334,10 @@ fn local_size() {
 }
 
 impl Local {
+    /// Number of pinnings after which a participant will execute some deferred functions from the
+    /// global queue.
+    const PINNINGS_BETWEEN_COLLECT: usize = 128;
+
     const COUNTS_BETWEEN_ADVANCE: usize = 64;
 
     /// Registers a new `Local` in the provided `Global`.
@@ -345,6 +352,8 @@ impl Local {
                 guard_count: Cell::new(0),
                 handle_count: Cell::new(1),
                 advance_count: Cell::new(0),
+                prev_epoch: Cell::new(Epoch::starting()),
+                pin_count: Cell::new(0),
                 manual_count: Cell::new(0),
                 must_collect: Cell::new(false),
                 collecting: Cell::new(false),
@@ -426,17 +435,6 @@ impl Local {
         }
     }
 
-    #[inline]
-    pub(crate) fn with_collecting<F: Fn()>(&self, f: F) {
-        if self.collecting.get() {
-            // Prevent nested collections.
-            return;
-        }
-        self.collecting.set(true);
-        f();
-        self.collecting.set(false);
-    }
-
     /// Pins the `Local`.
     #[inline]
     pub(crate) fn pin(&self) -> Guard {
@@ -446,7 +444,7 @@ impl Local {
         self.guard_count.set(guard_count.checked_add(1).unwrap());
 
         if guard_count == 0 {
-            loop {
+            let new_epoch = loop {
                 let global_epoch = self.global().epoch.load(Ordering::Relaxed);
                 let new_epoch = global_epoch.pinned();
 
@@ -488,9 +486,24 @@ impl Local {
                 }
 
                 if new_epoch.value() == self.global().epoch.load(Ordering::Acquire).value() {
-                    break;
+                    break new_epoch;
                 }
                 self.epoch.store(Epoch::starting(), Ordering::Release);
+            };
+
+            // Reset the advance couter if epoch has advanced.
+            if new_epoch != self.prev_epoch.get() {
+                self.prev_epoch.set(new_epoch);
+                self.advance_count.set(0);
+            }
+
+            // Increment the pin counter.
+            let count = self.pin_count.get().wrapping_add(1);
+            self.pin_count.set(count);
+
+            // After every `PINNINGS_BETWEEN_COLLECT` schedule a collection.
+            if count % Self::PINNINGS_BETWEEN_COLLECT == 0 {
+                self.must_collect.set(true);
             }
         }
 
@@ -501,16 +514,16 @@ impl Local {
     #[inline]
     pub(crate) fn unpin(&self) {
         let guard_count = self.guard_count.get();
-        if guard_count == 1 {
-            self.with_collecting(|| {
-                while self.must_collect.get() {
-                    self.must_collect.set(false);
-                    debug_assert!(self.epoch.load(Ordering::Relaxed).is_pinned());
-                    let guard = ManuallyDrop::new(Guard { local: self });
-                    self.global().collect(&guard);
-                    self.repin_without_collect();
-                }
-            });
+        if guard_count == 1 && !self.collecting.get() {
+            self.collecting.set(true);
+            while self.must_collect.get() {
+                self.must_collect.set(false);
+                debug_assert!(self.epoch.load(Ordering::Relaxed).is_pinned());
+                let guard = ManuallyDrop::new(Guard { local: self });
+                self.global().collect(&guard);
+                self.repin_without_collect();
+            }
+            self.collecting.set(false);
         }
 
         self.guard_count.set(guard_count - 1);
@@ -535,7 +548,7 @@ impl Local {
 
     /// Repins the local epoch without checking a scheduled collection.
     #[inline]
-    pub(crate) fn repin_without_collect(&self) {
+    pub(crate) fn repin_without_collect(&self) -> Epoch {
         let epoch = self.epoch.load(Ordering::Relaxed);
         let global_epoch = self.global().epoch.load(Ordering::Relaxed).pinned();
 
@@ -545,6 +558,7 @@ impl Local {
             // accesses from the previous epoch do not leak into the new one.
             self.epoch.store(global_epoch, Ordering::Release);
         }
+        global_epoch
     }
 
     /// Increments the handle count.

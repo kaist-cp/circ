@@ -396,9 +396,10 @@ impl Cs for CsEBR {
     }
 }
 
+#[inline]
 unsafe fn dispose<T: GraphNode<CsEBR>>(inner: *mut RcInner<T>) {
-    let cs = &CsEBR::new();
     DISPOSE_COUNTER.with(|counter| {
+        let cs = &CsEBR::new();
         if T::UNIQUE_OUTDEGREE {
             dispose_list(inner, counter, cs);
         } else {
@@ -407,6 +408,7 @@ unsafe fn dispose<T: GraphNode<CsEBR>>(inner: *mut RcInner<T>) {
     });
 }
 
+#[inline]
 unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
     ptr: *mut RcInner<T>,
     depth: usize,
@@ -445,6 +447,14 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
     if depth == 0 || modu.le(node_epoch as _, curr_epoch as isize - 3) {
         // The current node is immediately reclaimable.
         rc.data().pop_outgoings(&mut outgoings);
+        unsafe {
+            ManuallyDrop::drop(&mut rc.storage);
+            if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
+                CsEBR::decrement_weak(rc, Some(cs));
+            } else {
+                drop(CsEBR::own_object(rc));
+            }
+        }
         for next in outgoings.drain(..) {
             if next.is_null() {
                 continue;
@@ -480,20 +490,13 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
                 dispose_general_node(next_ptr.as_raw(), depth + 1, counter, cs);
             }
         }
-        unsafe {
-            ManuallyDrop::drop(&mut rc.storage);
-            if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
-                CsEBR::decrement_weak(rc, Some(cs));
-            } else {
-                drop(CsEBR::own_object(rc));
-            }
-        }
     } else {
         // It is likely to be unsafe to reclaim right now.
         cs.defer(rc, |rc| CsEBR::try_destruct(rc));
     }
 }
 
+#[inline]
 unsafe fn dispose_list<T: GraphNode<CsEBR>>(
     root: *mut RcInner<T>,
     counter: &Cell<usize>,
@@ -506,7 +509,7 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
     while let Some(rc) = ptr.take().and_then(|ptr| ptr.as_mut()) {
         let count = counter.get();
         counter.set(count + 1);
-        if count % 128 == 0 {
+        if count % 512 == 0 {
             if let Some(local) = cs.guard.as_ref().unwrap().local.as_ref() {
                 local.repin_without_collect();
             }
@@ -522,6 +525,14 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
         if root == rc || modu.le(node_epoch as _, curr_epoch as isize - 3) {
             // The current node is immediately reclaimable.
             let next = rc.data().pop_unique();
+            unsafe {
+                ManuallyDrop::drop(&mut rc.storage);
+                if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
+                    CsEBR::decrement_weak(rc, Some(cs));
+                } else {
+                    drop(CsEBR::own_object(rc));
+                }
+            }
             if !next.is_null() {
                 let next_ptr = next.into_raw();
                 let next_ref = next_ptr.deref();
@@ -551,14 +562,6 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
                 // If the reference count hit zero, try dispose it.
                 if next_cnt.strong() == 0 {
                     ptr = Some(next_ptr.as_raw());
-                }
-            }
-            unsafe {
-                ManuallyDrop::drop(&mut rc.storage);
-                if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
-                    CsEBR::decrement_weak(rc, Some(cs));
-                } else {
-                    drop(CsEBR::own_object(rc));
                 }
             }
         } else {
