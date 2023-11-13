@@ -312,33 +312,20 @@ impl Cs for CsEBR {
     unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>) {
         let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
         debug_assert!(!old.destructed());
-        if old.strong() > 0 {
-            Self::decrement_strong(inner, 1, None);
-        }
         loop {
+            if old.strong() > 0 {
+                Self::decrement_strong(inner, 1, None);
+                return;
+            }
             match inner.state.compare_exchange(
                 old.as_raw(),
                 old.with_destructed(true).as_raw(),
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
-                Ok(_) => {
-                    ManuallyDrop::drop(&mut inner.storage);
-                    if old.weaked() {
-                        Self::decrement_weak(inner, None);
-                    } else {
-                        drop(Self::own_object(inner));
-                    }
-                    return;
-                }
-                Err(curr) => {
-                    let curr = State::from_raw(curr);
-                    if curr.strong() > 0 {
-                        Self::decrement_strong(inner, 1, None);
-                        return;
-                    }
-                    old = curr;
-                }
+                // Note that `decrement_weak` will be called in `dispose`.
+                Ok(_) => return dispose(inner),
+                Err(curr) => old = State::from_raw(curr),
             }
         }
     }
@@ -355,24 +342,22 @@ impl Cs for CsEBR {
     #[inline]
     fn increment_weak<T>(inner: &RcInner<T>) {
         let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
-        if old.weaked() {
-            if State::from_raw(inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst)).weak() == 0 {
-                inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst);
-            }
-        } else {
+        while !old.weaked() {
             // In this case, `increment_weak` must have been called from `Rc::downgrade`,
             // guaranteeing weak > 0, so it can’t be incremented from 0.
-            loop {
-                match inner.state.compare_exchange(
-                    old.as_raw(),
-                    old.with_weaked(true).add_weak(1).as_raw(),
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => break,
-                    Err(curr) => old = State::from_raw(curr),
-                }
+            debug_assert!(old.weak() != 0);
+            match inner.state.compare_exchange(
+                old.as_raw(),
+                old.with_weaked(true).add_weak(1).as_raw(),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(curr) => old = State::from_raw(curr),
             }
+        }
+        if State::from_raw(inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst)).weak() == 0 {
+            inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst);
         }
     }
 
@@ -497,7 +482,11 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
         }
         unsafe {
             ManuallyDrop::drop(&mut rc.storage);
-            CsEBR::decrement_weak(rc, Some(cs));
+            if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
+                CsEBR::decrement_weak(rc, Some(cs));
+            } else {
+                drop(CsEBR::own_object(rc));
+            }
         }
     } else {
         // It is likely to be unsafe to reclaim right now.
@@ -566,7 +555,11 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
             }
             unsafe {
                 ManuallyDrop::drop(&mut rc.storage);
-                CsEBR::decrement_weak(rc, Some(cs));
+                if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
+                    CsEBR::decrement_weak(rc, Some(cs));
+                } else {
+                    drop(CsEBR::own_object(rc));
+                }
             }
         } else {
             // It is likely to be unsafe to reclaim right now.

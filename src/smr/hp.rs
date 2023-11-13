@@ -170,10 +170,11 @@ impl Cs for CsHP {
     #[inline]
     unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>) {
         let mut old = inner.state.load(Ordering::SeqCst);
-        if old & STRONG > 0 {
-            Self::decrement_strong(inner, 1, None);
-        }
         loop {
+            if old & STRONG > 0 {
+                Self::decrement_strong(inner, 1, None);
+                return;
+            }
             match inner.state.compare_exchange(
                 old,
                 old | DESTRUCTED,
@@ -189,13 +190,7 @@ impl Cs for CsHP {
                     }
                     return;
                 }
-                Err(curr) => {
-                    if curr & STRONG > 0 {
-                        Self::decrement_strong(inner, 1, None);
-                        return;
-                    }
-                    old = curr;
-                }
+                Err(curr) => old = curr,
             }
         }
     }
@@ -212,24 +207,22 @@ impl Cs for CsHP {
     #[inline]
     fn increment_weak<T>(inner: &RcInner<T>) {
         let mut old = inner.state.load(Ordering::SeqCst);
-        if old & WEAKED == 0 {
+        while old & WEAKED == 0 {
             // In this case, `increment_weak` must have been called from `Rc::downgrade`,
             // guaranteeing weak > 0, so it can’t be incremented from 0.
-            loop {
-                match inner.state.compare_exchange(
-                    old,
-                    (old | WEAKED) + WEAK_COUNT,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => break,
-                    Err(curr) => old = curr,
-                }
+            debug_assert!(old & WEAK != 0);
+            match inner.state.compare_exchange(
+                old,
+                (old | WEAKED) + WEAK_COUNT,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(curr) => old = curr,
             }
-        } else {
-            if inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst) & WEAK == 0 {
-                inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst);
-            }
+        }
+        if inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst) & WEAK == 0 {
+            inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst);
         }
     }
 
