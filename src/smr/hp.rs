@@ -162,7 +162,7 @@ impl Cs for CsHP {
         cs: Option<&Self>,
     ) {
         let count = count as u64 * COUNT;
-        if inner.state.fetch_sub(count, Ordering::SeqCst) == count {
+        if inner.state.fetch_sub(count, Ordering::SeqCst) & STRONG == count {
             cs.defer(inner, |inner| Self::try_destruct(inner));
         }
     }
