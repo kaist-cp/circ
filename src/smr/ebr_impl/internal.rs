@@ -63,7 +63,7 @@ static mut MAX_OBJECTS: usize = 64;
 #[cfg(any(crossbeam_sanitize, miri))]
 static mut MAX_OBJECTS: usize = 4;
 
-static mut MANUAL_EVENTS_BETWEEN_COLLECT: usize = 128;
+static mut MANUAL_EVENTS_BETWEEN_COLLECT: usize = 64;
 
 /// Sets the capacity of thread-local deferred bag.
 ///
@@ -334,10 +334,6 @@ fn local_size() {
 }
 
 impl Local {
-    /// Number of pinnings after which a participant will execute some deferred functions from the
-    /// global queue.
-    const PINNINGS_BETWEEN_COLLECT: usize = 128;
-
     const COUNTS_BETWEEN_ADVANCE: usize = 64;
 
     /// Registers a new `Local` in the provided `Global`.
@@ -495,15 +491,6 @@ impl Local {
             if new_epoch != self.prev_epoch.get() {
                 self.prev_epoch.set(new_epoch);
                 self.advance_count.set(0);
-            }
-
-            // Increment the pin counter.
-            let count = self.pin_count.get().wrapping_add(1);
-            self.pin_count.set(count);
-
-            // After every `PINNINGS_BETWEEN_COLLECT` schedule a collection.
-            if count % Self::PINNINGS_BETWEEN_COLLECT == 0 {
-                self.must_collect.set(true);
             }
         }
 
