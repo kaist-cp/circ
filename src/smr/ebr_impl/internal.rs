@@ -41,6 +41,7 @@ use core::cell::Cell;
 use core::mem::{self, ManuallyDrop};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{fmt, ptr};
+use std::collections::BTreeMap;
 
 use crossbeam_utils::CachePadded;
 use memoffset::offset_of;
@@ -63,7 +64,7 @@ static mut MAX_OBJECTS: usize = 64;
 #[cfg(any(crossbeam_sanitize, miri))]
 static mut MAX_OBJECTS: usize = 4;
 
-static mut MANUAL_EVENTS_BETWEEN_COLLECT: usize = 64;
+const MANUAL_EVENTS_BETWEEN_COLLECT: usize = 64;
 
 /// Sets the capacity of thread-local deferred bag.
 ///
@@ -71,14 +72,6 @@ static mut MANUAL_EVENTS_BETWEEN_COLLECT: usize = 64;
 /// because there is no synchronization between reads and writes on the capacity variable.
 pub fn set_bag_capacity(max_objects: usize) {
     unsafe { MAX_OBJECTS = max_objects };
-}
-
-/// Sets the manual collection interval.
-///
-/// Note that an update on this interval may not be reflected immediately to concurrent threads,
-/// because there is no synchronization between reads and writes on the interval variable.
-pub fn set_manual_collection_interval(interval: usize) {
-    unsafe { MANUAL_EVENTS_BETWEEN_COLLECT = interval };
 }
 
 /// A bag of deferred functions.
@@ -187,6 +180,25 @@ impl Global {
             queue: Queue::new(),
             epoch: CachePadded::new(AtomicEpoch::new(Epoch::starting())),
         }
+    }
+
+    pub unsafe fn collect_queue(&self) -> (BTreeMap<usize, usize>, usize) {
+        let mut count = BTreeMap::new();
+        let mut collected = vec![];
+        let mut max = 0;
+        let mut out_of_order = 0;
+        while let Some(item) = self.queue.try_pop(unprotected()) {
+            *count.entry(item.epoch.value()).or_default() += 1;
+            if item.epoch.value() < max {
+                out_of_order += 1;
+            }
+            max = max.max(item.epoch.value());
+            collected.push(item);
+        }
+        for item in collected {
+            self.queue.push(item, unprotected());
+        }
+        (count, out_of_order)
     }
 
     /// Pushes the bag into the global queue and replaces the bag with a new empty bag.
@@ -300,7 +312,7 @@ pub(crate) struct Local {
     collector: UnsafeCell<ManuallyDrop<Collector>>,
 
     /// The local bag of deferred functions.
-    pub(crate) bag: UnsafeCell<Bag>,
+    pub(crate) bags: UnsafeCell<[Bag; 5]>,
 
     /// The number of guards keeping this participant pinned.
     guard_count: Cell<usize>,
@@ -344,7 +356,7 @@ impl Local {
             let local = Owned::new(Local {
                 entry: Entry::default(),
                 collector: UnsafeCell::new(ManuallyDrop::new(collector.clone())),
-                bag: UnsafeCell::new(Bag::new()),
+                bags: UnsafeCell::new([Bag::new(), Bag::new(), Bag::new(), Bag::new(), Bag::new()]),
                 guard_count: Cell::new(0),
                 handle_count: Cell::new(1),
                 advance_count: Cell::new(0),
@@ -386,13 +398,20 @@ impl Local {
         self.guard_count.get() > 0
     }
 
+    #[inline]
+    pub(crate) fn curr_bag(&self) -> &mut Bag {
+        self.bags.with_mut(|b| unsafe {
+            (*b).get_unchecked_mut(self.epoch.load(Ordering::Relaxed).value() % 5)
+        })
+    }
+
     /// Adds `deferred` to the thread-local bag.
     ///
     /// # Safety
     ///
     /// It should be safe for another thread to execute the given function.
     pub(crate) unsafe fn defer(&self, mut deferred: Deferred, guard: &Guard) {
-        let bag = self.bag.with_mut(|b| &mut *b);
+        let bag = self.curr_bag();
 
         while let Err(d) = bag.try_push(deferred) {
             self.global().push_bag(bag, guard);
@@ -408,7 +427,7 @@ impl Local {
     }
 
     pub(crate) fn push_to_global(&self, guard: &Guard) {
-        let bag = self.bag.with_mut(|b| unsafe { &mut *b });
+        let bag = self.curr_bag();
 
         if !bag.is_empty() {
             self.global().push_bag(bag, guard);
@@ -491,6 +510,22 @@ impl Local {
             if new_epoch != self.prev_epoch.get() {
                 self.prev_epoch.set(new_epoch);
                 self.advance_count.set(0);
+                let diff = new_epoch.value() - self.prev_epoch.get().value();
+
+                // All bags on epoch `new + 2` ~ `new + diff - 3` are able to be attempted.
+                if !self.collecting.get() && diff >= 4 {
+                    self.collecting.set(true);
+                    let mut bags = [None, None, None, None, None];
+                    for i in 0..diff.min(7) - 3 {
+                        bags[i] = Some(self.bags.with_mut(|bags| unsafe {
+                            mem::take((*bags).get_unchecked_mut((new_epoch.value() + 1 + i) % 5))
+                        }));
+                    }
+                    for mut bag in bags {
+                        drop(bag.take());
+                    }
+                    self.collecting.set(false);
+                }
             }
         }
 
@@ -607,13 +642,14 @@ impl Local {
         let manual_count = self.manual_count.get().wrapping_add(1);
         self.manual_count.set(manual_count);
 
-        if manual_count % unsafe { MANUAL_EVENTS_BETWEEN_COLLECT } == 0 {
+        if manual_count % MANUAL_EVENTS_BETWEEN_COLLECT == 0 {
             self.flush(guard);
         }
     }
 
     pub(crate) fn bag_len(&self) -> usize {
-        self.bag.with(|b| unsafe { &*b }.0.len())
+        self.bags
+            .with(|b| unsafe { &*b }.iter().map(|bag| bag.0.len()).sum())
     }
 }
 

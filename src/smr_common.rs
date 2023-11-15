@@ -49,7 +49,7 @@ pub trait Cs {
         F: Fn(Ordering) -> TaggedCnt<T>;
     fn clear(&mut self);
 
-    fn timestamp() -> Option<usize>;
+    fn timestamp(&self) -> Option<usize>;
     fn increment_strong<T>(inner: &RcInner<T>) -> bool;
     unsafe fn decrement_strong<T: GraphNode<Self>>(
         inner: &mut RcInner<T>,

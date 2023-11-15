@@ -1,5 +1,6 @@
 use std::cell::Cell;
-use std::mem::{swap, ManuallyDrop};
+use std::mem::{swap, ManuallyDrop, MaybeUninit};
+use std::sync::atomic::AtomicUsize;
 
 use atomic::Ordering;
 
@@ -24,6 +25,12 @@ const WEAK_COUNT: u64 = 1 << STRONG_WIDTH;
 thread_local! {
     static DISPOSE_COUNTER: Cell<usize> = Cell::new(0);
 }
+
+pub static TOTAL_DISPOSED: AtomicUsize = AtomicUsize::new(0);
+pub static DISPOSE_CALL: AtomicUsize = AtomicUsize::new(0);
+pub static DISPOSED: [AtomicUsize; 1024] = unsafe { MaybeUninit::zeroed().assume_init() };
+pub static DISPOSED_EX: AtomicUsize = AtomicUsize::new(0);
+pub static APPROX_MAX: AtomicUsize = AtomicUsize::new(0);
 
 /// Effectively wraps the presence of epoch and destruction bits.
 #[derive(Clone, Copy)]
@@ -272,7 +279,10 @@ impl Cs for CsEBR {
         count: u32,
         cs: Option<&Self>,
     ) {
-        let epoch = Self::timestamp().unwrap();
+        let epoch = cs
+            .and_then(|cs| cs.guard.as_ref())
+            .map(|guard| guard.local_epoch().value())
+            .unwrap_or_else(|| default_collector().global_epoch().value());
         // Should mark the current epoch on the strong count with CAS.
         let hit_zero = loop {
             let curr = State::from_raw(inner.state.load(Ordering::SeqCst));
@@ -387,8 +397,13 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    fn timestamp() -> Option<usize> {
-        Some(default_collector().global_epoch().value())
+    fn timestamp(&self) -> Option<usize> {
+        Some(
+            self.guard
+                .as_ref()
+                .map(|guard| guard.local_epoch().value())
+                .unwrap_or_else(|| default_collector().global_epoch().value()),
+        )
     }
 
     fn strong_count<T>(inner: &RcInner<T>) -> u32 {
@@ -399,12 +414,27 @@ impl Cs for CsEBR {
 #[inline]
 unsafe fn dispose<T: GraphNode<CsEBR>>(inner: *mut RcInner<T>) {
     DISPOSE_COUNTER.with(|counter| {
+        // let prev = counter.get();
         let cs = &CsEBR::new();
         if T::UNIQUE_OUTDEGREE {
             dispose_list(inner, counter, cs);
         } else {
             dispose_general_node(inner, 0, counter, cs);
         }
+        // let next = counter.get();
+
+        // let disposed = next - prev;
+        // TOTAL_DISPOSED.fetch_add(disposed, Ordering::Relaxed);
+        // DISPOSE_CALL.fetch_add(1, Ordering::Relaxed);
+        // if let Some(slot) = DISPOSED.get(disposed) {
+        //     slot.fetch_add(1, Ordering::Relaxed);
+        // } else {
+        //     DISPOSED_EX.fetch_add(1, Ordering::Relaxed);
+        //     let prev_max = APPROX_MAX.load(Ordering::Acquire);
+        //     if prev_max < disposed {
+        //         APPROX_MAX.store(disposed, Ordering::Release);
+        //     }
+        // }
     });
 }
 
@@ -446,7 +476,7 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
     // old enough, `modu.le` may return false.
     if depth == 0 || modu.le(node_epoch as _, curr_epoch as isize - 3) {
         // The current node is immediately reclaimable.
-        rc.data().pop_outgoings(&mut outgoings);
+        rc.data().pop_outgoings(&mut outgoings, cs);
         unsafe {
             ManuallyDrop::drop(&mut rc.storage);
             if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
@@ -524,7 +554,7 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
         // old enough, `modu.le` may return false.
         if root == rc || modu.le(node_epoch as _, curr_epoch as isize - 3) {
             // The current node is immediately reclaimable.
-            let next = rc.data().pop_unique();
+            let next = rc.data().pop_unique(cs);
             unsafe {
                 ManuallyDrop::drop(&mut rc.storage);
                 if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {

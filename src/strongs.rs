@@ -14,21 +14,21 @@ pub trait GraphNode<C: Cs + ?Sized> {
 
     /// Returns `Rc`s in this node.
     /// It is safe to return less than the actual amount of `Rc`s.
-    fn pop_outgoings(&self, result: &mut Vec<Rc<Self, C>>)
+    fn pop_outgoings(&self, result: &mut Vec<Rc<Self, C>>, cs: &C)
     where
         Self: Sized;
 
-    fn pop_unique(&self) -> Rc<Self, C>
+    fn pop_unique(&self, cs: &C) -> Rc<Self, C>
     where
         Self: Sized;
 }
 
 impl<T> Tagged<RcInner<T>> {
-    fn with_timestamp<C: Cs>(self) -> Self {
+    fn with_timestamp<C: Cs>(self, cs: &C) -> Self {
         if self.is_null() {
             self
         } else {
-            self.with_high_tag(C::timestamp().unwrap_or(0))
+            self.with_high_tag(cs.timestamp().unwrap_or(0))
         }
     }
 }
@@ -95,7 +95,7 @@ impl<T: GraphNode<C>, C: Cs> AtomicRc<T, C> {
     pub fn store<P: StrongPtr<T, C>>(&self, ptr: P, order: Ordering, cs: &C) {
         let ptr = ptr.into_rc();
         let new_ptr = ptr.as_ptr();
-        let old_ptr = self.link.swap(new_ptr.with_timestamp::<C>(), order);
+        let old_ptr = self.link.swap(new_ptr.with_timestamp::<C>(cs), order);
         // Skip decrementing a strong count of the inserted pointer.
         forget(ptr);
         unsafe {
@@ -107,12 +107,11 @@ impl<T: GraphNode<C>, C: Cs> AtomicRc<T, C> {
     }
 
     /// Swaps the currently stored shared pointer with the given shared pointer.
-    /// This operation is thread-safe.
     /// (It is equivalent to `exchange` from the original implementation.)
     #[inline(always)]
-    pub fn swap(&self, new: Rc<T, C>, order: Ordering) -> Rc<T, C> {
+    pub fn swap(&self, new: Rc<T, C>, order: Ordering, cs: &C) -> Rc<T, C> {
         let new_ptr = new.into_raw();
-        let old_ptr = self.link.swap(new_ptr.with_timestamp::<C>(), order);
+        let old_ptr = self.link.swap(new_ptr.with_timestamp::<C>(cs), order);
         Rc::from_raw(old_ptr)
     }
 
@@ -126,9 +125,9 @@ impl<T: GraphNode<C>, C: Cs> AtomicRc<T, C> {
         desired: Rc<T, C>,
         success: Ordering,
         failure: Ordering,
-        _: &C,
+        cs: &C,
     ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>> {
-        let desired_ptr = desired.as_ptr().with_timestamp::<C>();
+        let desired_ptr = desired.as_ptr().with_timestamp::<C>(cs);
         loop {
             match self
                 .link
@@ -163,11 +162,11 @@ impl<T: GraphNode<C>, C: Cs> AtomicRc<T, C> {
         desired: Rc<T, C>,
         success: Ordering,
         failure: Ordering,
-        _: &C,
+        cs: &C,
     ) -> Result<Rc<T, C>, CompareExchangeErrorRc<T, Rc<T, C>>> {
         match self.link.compare_exchange_weak(
             expected,
-            desired.as_ptr().with_timestamp::<C>(),
+            desired.as_ptr().with_timestamp::<C>(cs),
             success,
             failure,
         ) {
@@ -188,13 +187,13 @@ impl<T: GraphNode<C>, C: Cs> AtomicRc<T, C> {
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
-        _: &C,
+        cs: &C,
     ) -> Result<TaggedCnt<T>, CompareExchangeErrorRc<T, TaggedCnt<T>>>
     where
         P: StrongPtr<T, C>,
     {
         let mut expected = expected.as_ptr();
-        let desired = expected.with_tag(desired_tag).with_timestamp::<C>();
+        let desired = expected.with_tag(desired_tag).with_timestamp::<C>(cs);
         loop {
             match self
                 .link
@@ -593,6 +592,14 @@ impl<T: GraphNode<C>, C: Cs> Snapshot<T, C> {
     #[inline]
     pub unsafe fn copy_to(&self, other: &mut Self) {
         self.acquired.copy_to(&mut other.acquired);
+    }
+
+    #[inline]
+    pub unsafe fn ref_count(&self) -> u64 {
+        if let Some(cnt) = self.acquired.as_ptr().as_ref() {
+            return cnt.state.load(Ordering::SeqCst) & 0b11111;
+        }
+        unreachable!();
     }
 }
 

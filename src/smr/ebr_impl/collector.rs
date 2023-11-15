@@ -14,6 +14,7 @@
 /// ```
 use core::fmt;
 use core::sync::atomic::Ordering;
+use std::collections::BTreeMap;
 
 use super::guard::Guard;
 use super::internal::{Global, Local};
@@ -56,6 +57,10 @@ impl Collector {
     /// Checks if the global queue is empty.
     pub fn is_global_queue_empty(&self) -> bool {
         self.global.is_global_queue_empty()
+    }
+
+    pub unsafe fn collect_queue(&self) -> (BTreeMap<usize, usize>, usize) {
+        self.global.collect_queue()
     }
 }
 
