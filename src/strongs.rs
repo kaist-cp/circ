@@ -1,4 +1,5 @@
 use std::{
+    array,
     marker::PhantomData,
     mem::{self, forget},
     sync::atomic::{AtomicUsize, Ordering},
@@ -14,11 +15,11 @@ pub trait GraphNode<C: Cs + ?Sized> {
 
     /// Returns `Rc`s in this node.
     /// It is safe to return less than the actual amount of `Rc`s.
-    fn pop_outgoings(&self, result: &mut Vec<Rc<Self, C>>)
+    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self, C>>)
     where
         Self: Sized;
 
-    fn pop_unique(&self) -> Rc<Self, C>
+    fn pop_unique(&mut self) -> Rc<Self, C>
     where
         Self: Sized;
 }
@@ -262,6 +263,13 @@ impl<T: GraphNode<C>, C: Cs> AtomicRc<T, C> {
         }
         return None;
     }
+
+    #[inline]
+    pub fn take(&mut self) -> Rc<T, C> {
+        let ptr = self.link.load(Ordering::Relaxed);
+        self.link.store(Tagged::null(), Ordering::Relaxed);
+        Rc::from_raw(ptr)
+    }
 }
 
 impl<T: GraphNode<C>, C: Cs> Drop for AtomicRc<T, C> {
@@ -344,6 +352,14 @@ impl<T: GraphNode<C>, C: Cs> Rc<T, C> {
         }
     }
 
+    #[inline]
+    pub fn weak_many<const N: usize>(&self) -> [Weak<T, C>; N] {
+        if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
+            C::increment_weak(cnt, N as u32);
+        }
+        array::from_fn(|_| Weak::null())
+    }
+
     #[inline(always)]
     pub fn clone(&self) -> Self {
         let rc = Self {
@@ -412,7 +428,7 @@ impl<T: GraphNode<C>, C: Cs> Rc<T, C> {
     pub fn downgrade(&self) -> Weak<T, C> {
         unsafe {
             if let Some(cnt) = self.as_ptr().as_raw().as_ref() {
-                C::increment_weak(cnt);
+                C::increment_weak(cnt, 1);
                 return Weak::from_raw(self.ptr);
             }
         }
@@ -506,32 +522,9 @@ where
 impl<T, C: Cs> Copy for Snapshot<T, C> where C::RawShield<T>: Copy {}
 
 impl<T: GraphNode<C>, C: Cs> Snapshot<T, C> {
-    #[inline(always)]
-    pub fn new() -> Self {
-        Self {
-            acquired: <C as Cs>::RawShield::null(),
-        }
-    }
-
     #[inline]
     pub fn load(&mut self, from: &AtomicRc<T, C>, cs: &C) {
         cs.acquire(|order| from.load(order), &mut self.acquired);
-    }
-
-    #[inline]
-    pub fn load_from_weak(&mut self, from: &AtomicWeak<T, C>, cs: &C) {
-        loop {
-            let ptr = cs.acquire(|order| from.load(order), &mut self.acquired);
-
-            if !ptr.is_null() && unsafe { C::non_zero(ptr.deref()) } {
-                return;
-            } else {
-                self.acquired.clear();
-                if ptr.is_null() || ptr == from.link.load(Ordering::Acquire) {
-                    return;
-                }
-            }
-        }
     }
 
     #[inline]
@@ -565,6 +558,13 @@ impl<T: GraphNode<C>, C: Cs> Snapshot<T, C> {
         rc
     }
 
+    #[inline]
+    pub fn downgrade(&self) -> Weak<T, C> {
+        let weak = Weak::from_raw(self.as_ptr());
+        weak.increment_weak();
+        weak
+    }
+
     #[inline(always)]
     pub fn tag(&self) -> usize {
         self.as_ptr().tag()
@@ -593,6 +593,31 @@ impl<T: GraphNode<C>, C: Cs> Snapshot<T, C> {
     #[inline]
     pub unsafe fn copy_to(&self, other: &mut Self) {
         self.acquired.copy_to(&mut other.acquired);
+    }
+}
+
+impl<T, C: Cs> Snapshot<T, C> {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self {
+            acquired: <C as Cs>::RawShield::null(),
+        }
+    }
+
+    #[inline]
+    pub fn load_from_weak(&mut self, from: &AtomicWeak<T, C>, cs: &C) -> bool {
+        loop {
+            let ptr = cs.acquire(|order| from.load(order), &mut self.acquired);
+
+            if ptr.is_null() || unsafe { C::non_zero(ptr.deref()) } {
+                return true;
+            } else {
+                self.acquired.clear();
+                if ptr == from.link.load(Ordering::Acquire) {
+                    return false;
+                }
+            }
+        }
     }
 }
 

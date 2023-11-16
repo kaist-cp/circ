@@ -205,7 +205,7 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    fn increment_weak<T>(inner: &RcInner<T>) {
+    fn increment_weak<T>(inner: &RcInner<T>, count: u32) {
         let mut old = inner.state.load(Ordering::SeqCst);
         while old & WEAKED == 0 {
             // In this case, `increment_weak` must have been called from `Rc::downgrade`,
@@ -213,7 +213,7 @@ impl Cs for CsHP {
             debug_assert!(old & WEAK != 0);
             match inner.state.compare_exchange(
                 old,
-                (old | WEAKED) + WEAK_COUNT,
+                (old | WEAKED) + WEAK_COUNT * (count as u64),
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
@@ -221,7 +221,12 @@ impl Cs for CsHP {
                 Err(curr) => old = curr,
             }
         }
-        if inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst) & WEAK == 0 {
+        if inner
+            .state
+            .fetch_add(count as u64 * WEAK_COUNT, Ordering::SeqCst)
+            & WEAK
+            == 0
+        {
             inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst);
         }
     }

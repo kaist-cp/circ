@@ -7,7 +7,7 @@ use std::{
 use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
-use crate::{Cs, GraphNode, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
+use crate::{Cs, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -53,9 +53,19 @@ impl<T, C: Cs> AtomicWeak<T, C> {
     }
 
     #[inline]
-    pub fn store<P: WeakPtr<T, C>>(&self, ptr: P, order: Ordering, cs: &C) {
+    pub fn load_ss(&self, cs: &C) -> Option<Snapshot<T, C>> {
+        let mut result = Snapshot::new();
+        if result.load_from_weak(self, cs) {
+            Some(result)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn store(&self, ptr: Weak<T, C>, order: Ordering, cs: &C) {
         let new_ptr = ptr.as_ptr();
-        ptr.into_weak_count();
+        forget(ptr);
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
@@ -68,44 +78,36 @@ impl<T, C: Cs> AtomicWeak<T, C> {
     /// the same managed object, replaces the current pointer with a copy of desired
     /// (incrementing its reference count) and returns true. Otherwise, returns false.
     #[inline(always)]
-    pub fn compare_exchange<'g, P>(
+    pub fn compare_exchange(
         &self,
         expected: TaggedCnt<T>,
-        desired: P,
+        desired: Weak<T, C>,
         success: Ordering,
         failure: Ordering,
-        _: &'g C,
-    ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, P>>
-    where
-        P: WeakPtr<T, C>,
-    {
+        _: &C,
+    ) -> Result<Weak<T, C>, CompareExchangeErrorWeak<T, Weak<T, C>>> {
         match self
             .link
             .compare_exchange(expected, desired.as_ptr(), success, failure)
         {
             Ok(_) => {
-                drop(Weak::<T, C>::from_raw(expected));
-                // Here, `into_weak_count` increment the reference count of `desired` only if
-                // `desired` is `Snapshot` or its variants.
-                //
-                // If `desired` is `Rc`, semantically the ownership of the reference count from
-                // `desired` is moved to `self`. Because of this reason, we must skip decrementing
-                // the reference count of `desired`.
-                desired.into_weak_count();
-                Ok(expected)
+                // Skip decrementing a strong count of the inserted pointer.
+                forget(desired);
+                let weak = Weak::from_raw(expected);
+                return Ok(weak);
             }
             Err(current) => Err(CompareExchangeErrorWeak { desired, current }),
         }
     }
 
     #[inline]
-    pub fn compare_exchange_tag<'g, P>(
+    pub fn compare_exchange_tag<P>(
         &self,
         expected: &P,
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
-        _: &'g C,
+        _: &C,
     ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, TaggedCnt<T>>>
     where
         P: StrongPtr<T, C>,
@@ -120,49 +122,8 @@ impl<T, C: Cs> AtomicWeak<T, C> {
         }
     }
 
-    /// Atomically compares the underlying pointer with expected, and if they refer to
-    /// the same managed object, replaces the current pointer with a copy of desired
-    /// (incrementing its reference count) and returns true. Otherwise, returns false.
-    ///
-    /// It is guaranteed that the current pointer on a failure is protected by `current_snap`.
-    /// It is lock-free but not wait-free. Use `compare_exchange` for an wait-free implementation.
     #[inline(always)]
-    pub fn compare_exchange_protecting_current<'g, P>(
-        &self,
-        expected: TaggedCnt<T>,
-        mut desired: P,
-        current_snap: &mut Snapshot<T, C>,
-        success: Ordering,
-        failure: Ordering,
-        cs: &'g C,
-    ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, P>>
-    where
-        T: GraphNode<C>,
-        P: WeakPtr<T, C>,
-    {
-        loop {
-            current_snap.load_from_weak(self, cs);
-            if current_snap.as_ptr() != expected {
-                return Err(CompareExchangeErrorWeak {
-                    desired,
-                    current: current_snap.as_ptr(),
-                });
-            }
-            match self.compare_exchange(expected, desired, success, failure, cs) {
-                Ok(weak) => return Ok(weak),
-                Err(e) => {
-                    if e.current == current_snap.as_ptr() {
-                        return Err(e);
-                    } else {
-                        desired = e.desired;
-                    }
-                }
-            }
-        }
-    }
-
-    #[inline(always)]
-    pub fn fetch_or<'g>(&self, tag: usize, order: Ordering, _: &'g C) -> TaggedCnt<T> {
+    pub fn fetch_or(&self, tag: usize, order: Ordering, _: &C) -> TaggedCnt<T> {
         // HACK: The size and alignment of `Atomic<TaggedCnt<T>>` will be same with `AtomicUsize`.
         // The equality of the sizes is checked by `const_assert!`.
         let link = unsafe { &*(&self.link as *const _ as *const AtomicUsize) };
@@ -231,7 +192,7 @@ impl<T, C: Cs> Weak<T, C> {
         };
         unsafe {
             if let Some(cnt) = weak.ptr.as_raw().as_ref() {
-                C::increment_weak(cnt);
+                C::increment_weak(cnt, 1);
             }
         }
         weak
@@ -266,6 +227,13 @@ impl<T, C: Cs> Weak<T, C> {
         forget(self);
         new_ptr
     }
+
+    #[inline]
+    pub(crate) fn increment_weak(&self) {
+        if let Some(ptr) = unsafe { self.ptr.as_raw().as_ref() } {
+            C::increment_weak(ptr, 1);
+        }
+    }
 }
 
 impl<T, C: Cs> Drop for Weak<T, C> {
@@ -290,44 +258,5 @@ impl<T, C: Cs> Pointer<T> for Weak<T, C> {
     #[inline]
     fn as_ptr(&self) -> TaggedCnt<T> {
         self.ptr
-    }
-}
-
-pub trait WeakPtr<T, G>: Pointer<T> {
-    /// Consumes the aquired pointer, incrementing the reference count if we didn't increment
-    /// it before.
-    ///
-    /// Semantically, it is equivalent to giving ownership of a reference count outside the
-    /// environment.
-    ///
-    /// For example, we do nothing but forget its ownership if the pointer is [`Weak`],
-    /// but increment the reference count if the pointer is [`Snapshot`].
-    fn into_weak_count(self);
-}
-
-impl<T, C: Cs> WeakPtr<T, C> for Weak<T, C> {
-    #[inline]
-    fn into_weak_count(self) {
-        // As we have a reference count already, we don't have to do anything, but
-        // prevent calling a destructor which decrements it.
-        forget(self);
-    }
-}
-
-impl<T, C: Cs> WeakPtr<T, C> for Snapshot<T, C> {
-    #[inline]
-    fn into_weak_count(self) {
-        if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            C::increment_weak(cnt);
-        }
-    }
-}
-
-impl<T, C: Cs> WeakPtr<T, C> for &Snapshot<T, C> {
-    #[inline]
-    fn into_weak_count(self) {
-        if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            C::increment_weak(cnt);
-        }
     }
 }

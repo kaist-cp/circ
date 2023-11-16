@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, UnsafeCell};
 use std::mem::{swap, ManuallyDrop};
 
 use atomic::Ordering;
@@ -189,19 +189,27 @@ impl<T> Validatable<T> for WeakGuardEBR<T> {
 }
 
 pub struct CsEBR {
-    guard: Option<Guard>,
+    guard: Option<UnsafeCell<Guard>>,
 }
 
 impl CsEBR {
     pub fn guard(&self) -> Option<&Guard> {
-        self.guard.as_ref()
+        self.guard.as_ref().map(|guard| unsafe { &*guard.get() })
+    }
+
+    pub fn guard_mut(&self) -> Option<&mut Guard> {
+        self.guard
+            .as_ref()
+            .map(|guard| unsafe { &mut *guard.get() })
     }
 }
 
 impl From<Guard> for CsEBR {
     #[inline(always)]
     fn from(guard: Guard) -> Self {
-        Self { guard: Some(guard) }
+        Self {
+            guard: Some(UnsafeCell::new(guard)),
+        }
     }
 }
 
@@ -247,7 +255,7 @@ impl Cs for CsEBR {
 
     #[inline]
     fn clear(&mut self) {
-        if let Some(guard) = &mut self.guard {
+        if let Some(guard) = self.guard_mut() {
             guard.repin();
         }
     }
@@ -296,7 +304,7 @@ impl Cs for CsEBR {
             if hit_zero {
                 cs.defer(inner, |inner| Self::try_destruct(inner));
             }
-            if let Some(guard) = cs.guard.as_ref() {
+            if let Some(guard) = cs.guard() {
                 guard.incr_manual_collection();
             }
         } else {
@@ -304,7 +312,7 @@ impl Cs for CsEBR {
             if hit_zero {
                 cs.defer(inner, |inner| Self::try_destruct(inner));
             }
-            cs.guard.as_ref().unwrap().incr_manual_collection();
+            cs.guard().unwrap().incr_manual_collection();
         }
     }
 
@@ -340,7 +348,7 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    fn increment_weak<T>(inner: &RcInner<T>) {
+    fn increment_weak<T>(inner: &RcInner<T>, count: u32) {
         let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
         while !old.weaked() {
             // In this case, `increment_weak` must have been called from `Rc::downgrade`,
@@ -348,7 +356,7 @@ impl Cs for CsEBR {
             debug_assert!(old.weak() != 0);
             match inner.state.compare_exchange(
                 old.as_raw(),
-                old.with_weaked(true).add_weak(1).as_raw(),
+                old.with_weaked(true).add_weak(count).as_raw(),
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
@@ -356,7 +364,14 @@ impl Cs for CsEBR {
                 Err(curr) => old = State::from_raw(curr),
             }
         }
-        if State::from_raw(inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst)).weak() == 0 {
+        if State::from_raw(
+            inner
+                .state
+                .fetch_add(count as u64 * WEAK_COUNT, Ordering::SeqCst),
+        )
+        .weak()
+            == 0
+        {
             inner.state.fetch_add(WEAK_COUNT, Ordering::SeqCst);
         }
     }
@@ -423,7 +438,7 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
     let count = counter.get();
     counter.set(count + 1);
     if count % 128 == 0 {
-        if let Some(local) = cs.guard.as_ref().unwrap().local.as_ref() {
+        if let Some(local) = cs.guard().unwrap().local.as_ref() {
             local.repin_without_collect();
         }
     }
@@ -446,7 +461,7 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
     // old enough, `modu.le` may return false.
     if depth == 0 || modu.le(node_epoch as _, curr_epoch as isize - 3) {
         // The current node is immediately reclaimable.
-        rc.data().pop_outgoings(&mut outgoings);
+        rc.data_mut().pop_outgoings(&mut outgoings);
         unsafe {
             ManuallyDrop::drop(&mut rc.storage);
             if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
@@ -510,7 +525,7 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
         let count = counter.get();
         counter.set(count + 1);
         if count % 512 == 0 {
-            if let Some(local) = cs.guard.as_ref().unwrap().local.as_ref() {
+            if let Some(local) = cs.guard().and_then(|guard| guard.local.as_ref()) {
                 local.repin_without_collect();
             }
             curr_epoch = default_collector().global_epoch().value();
@@ -524,7 +539,7 @@ unsafe fn dispose_list<T: GraphNode<CsEBR>>(
         // old enough, `modu.le` may return false.
         if root == rc || modu.le(node_epoch as _, curr_epoch as isize - 3) {
             // The current node is immediately reclaimable.
-            let next = rc.data().pop_unique();
+            let next = rc.data_mut().pop_unique();
             unsafe {
                 ManuallyDrop::drop(&mut rc.storage);
                 if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
@@ -584,7 +599,7 @@ impl Deferable for CsEBR {
     {
         debug_assert!(!ptr.is_null());
         let cnt = &mut *ptr;
-        if let Some(guard) = &self.guard {
+        if let Some(guard) = self.guard() {
             guard.defer_unchecked(move || f(cnt));
         } else {
             f(cnt);

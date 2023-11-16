@@ -97,7 +97,7 @@ pub use self::atomic::{Atomic, CompareExchangeError, Owned, Pointable, Pointer, 
 pub use self::collector::{Collector, LocalHandle};
 pub use self::epoch::Epoch;
 pub use self::guard::{leaking, unprotected, Guard};
-pub use self::internal::{set_bag_capacity, set_manual_collection_interval};
+pub use self::internal::set_bag_capacity;
 
 #[allow(deprecated)]
 pub use self::atomic::{CompareAndSetError, CompareAndSetOrdering};

@@ -58,7 +58,7 @@ pub trait Cs {
     );
     unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>);
     unsafe fn try_dealloc<T>(inner: &mut RcInner<T>);
-    fn increment_weak<T>(inner: &RcInner<T>);
+    fn increment_weak<T>(inner: &RcInner<T>, count: u32);
     unsafe fn decrement_weak<T>(inner: &mut RcInner<T>, cs: Option<&Self>);
     fn non_zero<T>(inner: &RcInner<T>) -> bool;
     fn strong_count<T>(inner: &RcInner<T>) -> u32;

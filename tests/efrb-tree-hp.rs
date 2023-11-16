@@ -379,7 +379,7 @@ where
                 ));
 
                 let op = Update {
-                    p: finder.p.upgrade().downgrade(),
+                    p: finder.p.downgrade(),
                     p_l_dir: finder.p_l_dir,
                     l: finder.l.upgrade(),
                     l_other: finder.l_other.upgrade(),
@@ -450,9 +450,9 @@ where
                 );
             } else {
                 let op = Update {
-                    gp: finder.gp.upgrade().downgrade(),
+                    gp: finder.gp.downgrade(),
                     gp_p_dir: finder.gp_p_dir,
-                    p: finder.p.upgrade().downgrade(),
+                    p: finder.p.downgrade(),
                     p_l_dir: finder.p_l_dir,
                     l: finder.l.upgrade(),
                     l_other: finder.l_other.upgrade(),
