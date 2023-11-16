@@ -249,7 +249,7 @@ impl Cs for CsHP {
     }
 
     #[inline]
-    fn timestamp(&self) -> Option<usize> {
+    fn timestamp() -> Option<usize> {
         None
     }
 
