@@ -1,5 +1,4 @@
 use std::{
-    marker::PhantomData,
     mem::{self, forget},
     sync::atomic::AtomicUsize,
 };
@@ -7,7 +6,7 @@ use std::{
 use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
-use crate::{Cs, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
+use crate::{CsEBR, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -19,13 +18,12 @@ pub struct CompareExchangeErrorWeak<T, P> {
     pub current: TaggedCnt<T>,
 }
 
-pub struct AtomicWeak<T, C: Cs> {
+pub struct AtomicWeak<T> {
     pub(crate) link: Atomic<TaggedCnt<T>>,
-    _marker: PhantomData<*const C>,
 }
 
-unsafe impl<T: Send + Sync, C: Cs> Send for AtomicWeak<T, C> {}
-unsafe impl<T: Send + Sync, C: Cs> Sync for AtomicWeak<T, C> {}
+unsafe impl<T: Send + Sync> Send for AtomicWeak<T> {}
+unsafe impl<T: Send + Sync> Sync for AtomicWeak<T> {}
 
 // Ensure that TaggedPtr<T> is 8-byte long,
 // so that lock-free atomic operations are possible.
@@ -33,12 +31,11 @@ const_assert!(Atomic::<TaggedCnt<u8>>::is_lock_free());
 const_assert!(mem::size_of::<TaggedCnt<u8>>() == mem::size_of::<usize>());
 const_assert!(mem::size_of::<Atomic<TaggedCnt<u8>>>() == mem::size_of::<AtomicUsize>());
 
-impl<T, C: Cs> AtomicWeak<T, C> {
+impl<T> AtomicWeak<T> {
     #[inline(always)]
     pub fn null() -> Self {
         Self {
             link: Atomic::new(Tagged::null()),
-            _marker: PhantomData,
         }
     }
 
@@ -53,7 +50,7 @@ impl<T, C: Cs> AtomicWeak<T, C> {
     }
 
     #[inline]
-    pub fn load_ss(&self, cs: &C) -> Option<Snapshot<T, C>> {
+    pub fn load_ss(&self, cs: &CsEBR) -> Option<Snapshot<T>> {
         let mut result = Snapshot::new();
         if result.load_from_weak(self, cs) {
             Some(result)
@@ -63,13 +60,13 @@ impl<T, C: Cs> AtomicWeak<T, C> {
     }
 
     #[inline]
-    pub fn store(&self, ptr: Weak<T, C>, order: Ordering, cs: &C) {
+    pub fn store(&self, ptr: Weak<T>, order: Ordering, cs: &CsEBR) {
         let new_ptr = ptr.as_ptr();
         forget(ptr);
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                C::decrement_weak(cnt, Some(cs));
+                CsEBR::decrement_weak(cnt, Some(cs));
             }
         }
     }
@@ -81,11 +78,11 @@ impl<T, C: Cs> AtomicWeak<T, C> {
     pub fn compare_exchange(
         &self,
         expected: TaggedCnt<T>,
-        desired: Weak<T, C>,
+        desired: Weak<T>,
         success: Ordering,
         failure: Ordering,
-        _: &C,
-    ) -> Result<Weak<T, C>, CompareExchangeErrorWeak<T, Weak<T, C>>> {
+        _: &CsEBR,
+    ) -> Result<Weak<T>, CompareExchangeErrorWeak<T, Weak<T>>> {
         match self
             .link
             .compare_exchange(expected, desired.as_ptr(), success, failure)
@@ -107,10 +104,10 @@ impl<T, C: Cs> AtomicWeak<T, C> {
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
-        _: &C,
+        _: &CsEBR,
     ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, TaggedCnt<T>>>
     where
-        P: StrongPtr<T, C>,
+        P: StrongPtr<T>,
     {
         let desired = expected.as_ptr().with_tag(desired_tag);
         match self
@@ -123,7 +120,7 @@ impl<T, C: Cs> AtomicWeak<T, C> {
     }
 
     #[inline(always)]
-    pub fn fetch_or(&self, tag: usize, order: Ordering, _: &C) -> TaggedCnt<T> {
+    pub fn fetch_or(&self, tag: usize, order: Ordering, _: &CsEBR) -> TaggedCnt<T> {
         // HACK: The size and alignment of `Atomic<TaggedCnt<T>>` will be same with `AtomicUsize`.
         // The equality of the sizes is checked by `const_assert!`.
         let link = unsafe { &*(&self.link as *const _ as *const AtomicUsize) };
@@ -132,45 +129,43 @@ impl<T, C: Cs> AtomicWeak<T, C> {
     }
 }
 
-impl<T, C: Cs> From<Weak<T, C>> for AtomicWeak<T, C> {
+impl<T> From<Weak<T>> for AtomicWeak<T> {
     #[inline]
-    fn from(value: Weak<T, C>) -> Self {
+    fn from(value: Weak<T>) -> Self {
         let init_ptr = value.into_raw();
         Self {
             link: Atomic::new(init_ptr),
-            _marker: PhantomData,
         }
     }
 }
 
-impl<T, C: Cs> Drop for AtomicWeak<T, C> {
+impl<T> Drop for AtomicWeak<T> {
     #[inline(always)]
     fn drop(&mut self) {
         let ptr = self.link.load(Ordering::SeqCst);
         unsafe {
             if let Some(cnt) = ptr.as_raw().as_mut() {
-                C::decrement_weak(cnt, None);
+                CsEBR::decrement_weak(cnt, None);
             }
         }
     }
 }
 
-impl<T, C: Cs> Default for AtomicWeak<T, C> {
+impl<T> Default for AtomicWeak<T> {
     #[inline(always)]
     fn default() -> Self {
         Self::null()
     }
 }
 
-pub struct Weak<T, C: Cs> {
+pub struct Weak<T> {
     ptr: TaggedCnt<T>,
-    _marker: PhantomData<*const C>,
 }
 
-unsafe impl<T: Send + Sync, C: Cs> Send for Weak<T, C> {}
-unsafe impl<T: Send + Sync, C: Cs> Sync for Weak<T, C> {}
+unsafe impl<T: Send + Sync> Send for Weak<T> {}
+unsafe impl<T: Send + Sync> Sync for Weak<T> {}
 
-impl<T, C: Cs> Weak<T, C> {
+impl<T> Weak<T> {
     #[inline(always)]
     pub fn null() -> Self {
         Self::from_raw(TaggedCnt::null())
@@ -178,21 +173,15 @@ impl<T, C: Cs> Weak<T, C> {
 
     #[inline(always)]
     pub(crate) fn from_raw(ptr: TaggedCnt<T>) -> Self {
-        Self {
-            ptr,
-            _marker: PhantomData,
-        }
+        Self { ptr }
     }
 
     #[inline(always)]
     pub fn clone(&self) -> Self {
-        let weak = Self {
-            ptr: self.ptr,
-            _marker: PhantomData,
-        };
+        let weak = Self { ptr: self.ptr };
         unsafe {
             if let Some(cnt) = weak.ptr.as_raw().as_ref() {
-                C::increment_weak(cnt, 1);
+                CsEBR::increment_weak(cnt, 1);
             }
         }
         weak
@@ -231,30 +220,30 @@ impl<T, C: Cs> Weak<T, C> {
     #[inline]
     pub(crate) fn increment_weak(&self) {
         if let Some(ptr) = unsafe { self.ptr.as_raw().as_ref() } {
-            C::increment_weak(ptr, 1);
+            CsEBR::increment_weak(ptr, 1);
         }
     }
 }
 
-impl<T, C: Cs> Drop for Weak<T, C> {
+impl<T> Drop for Weak<T> {
     #[inline(always)]
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                C::decrement_weak(cnt, None);
+                CsEBR::decrement_weak(cnt, None);
             }
         }
     }
 }
 
-impl<T, C: Cs> PartialEq for Weak<T, C> {
+impl<T> PartialEq for Weak<T> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.ptr == other.ptr
     }
 }
 
-impl<T, C: Cs> Pointer<T> for Weak<T, C> {
+impl<T> Pointer<T> for Weak<T> {
     #[inline]
     fn as_ptr(&self) -> TaggedCnt<T> {
         self.ptr

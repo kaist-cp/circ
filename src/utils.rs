@@ -28,7 +28,7 @@ impl<T> RcInner<T> {
     }
 }
 
-pub struct Tagged<T> {
+pub struct Tagged<T: ?Sized> {
     ptr: *mut T,
 }
 

@@ -1,11 +1,11 @@
 use std::cell::{Cell, UnsafeCell};
-use std::mem::{swap, ManuallyDrop};
+use std::mem::ManuallyDrop;
 
 use atomic::Ordering;
 
 use super::ebr_impl::{default_collector, pin, Guard};
 use crate::utils::RcInner;
-use crate::{Pointer, Acquired, Cs, GraphNode, TaggedCnt, HIGH_TAG_WIDTH};
+use crate::{GraphNode, Pointer, TaggedCnt, HIGH_TAG_WIDTH};
 
 const EPOCH_WIDTH: u32 = HIGH_TAG_WIDTH;
 const EPOCH_MASK_HEIGHT: u32 = u64::BITS - EPOCH_WIDTH;
@@ -118,63 +118,6 @@ impl<const WIDTH: u32> Modular<WIDTH> {
     }
 }
 
-/// A tagged pointer which is pointing a `CountedObjPtr<T>`.
-///
-/// We may want to use `crossbeam_ebr::Shared` as a `Acquired`,
-/// but trait interfaces can be complicated because `crossbeam_ebr::Shared`
-/// requires to specify a lifetime specifier.
-pub struct AcquiredEBR<T>(TaggedCnt<T>);
-
-impl<T> Acquired<T> for AcquiredEBR<T> {
-    #[inline(always)]
-    fn as_ptr(&self) -> TaggedCnt<T> {
-        self.0
-    }
-
-    #[inline(always)]
-    fn null() -> Self {
-        Self(TaggedCnt::null())
-    }
-
-    #[inline(always)]
-    fn is_null(&self) -> bool {
-        self.0.is_null()
-    }
-
-    #[inline(always)]
-    fn swap(p1: &mut Self, p2: &mut Self) {
-        swap(p1, p2);
-    }
-
-    #[inline(always)]
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-
-    #[inline]
-    fn clear(&mut self) {
-        self.0 = TaggedCnt::null();
-    }
-
-    #[inline]
-    fn set_tag(&mut self, tag: usize) {
-        self.0 = self.0.with_tag(tag);
-    }
-
-    #[inline]
-    unsafe fn copy_to(&self, other: &mut Self) {
-        other.0 = self.0;
-    }
-}
-
-impl<T> Clone for AcquiredEBR<T> {
-    fn clone(&self) -> Self {
-        Self(self.0)
-    }
-}
-
-impl<T> Copy for AcquiredEBR<T> {}
-
 pub struct CsEBR {
     guard: Option<UnsafeCell<Guard>>,
 }
@@ -189,65 +132,52 @@ impl CsEBR {
             .as_ref()
             .map(|guard| unsafe { &mut *guard.get() })
     }
-}
-
-impl From<Guard> for CsEBR {
-    #[inline(always)]
-    fn from(guard: Guard) -> Self {
-        Self {
-            guard: Some(UnsafeCell::new(guard)),
-        }
-    }
-}
-
-impl Cs for CsEBR {
-    type RawShield<T> = AcquiredEBR<T>;
 
     #[inline(always)]
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::from(pin())
     }
 
     #[inline]
-    unsafe fn unprotected() -> Self {
+    pub unsafe fn unprotected() -> Self {
         Self { guard: None }
     }
 
     #[inline(always)]
-    fn create_object<T>(obj: T, init_strong: u32) -> *mut RcInner<T> {
+    pub(crate) fn create_object<T>(obj: T, init_strong: u32) -> *mut RcInner<T> {
         let obj = RcInner::new(obj, (init_strong as u64) * COUNT + WEAK_COUNT);
         Box::into_raw(Box::new(obj))
     }
 
     #[inline]
-    unsafe fn own_object<T>(ptr: *mut RcInner<T>) -> RcInner<T> {
+    pub(crate) unsafe fn own_object<T>(ptr: *mut RcInner<T>) -> RcInner<T> {
         *Box::from_raw(ptr)
     }
 
     #[inline(always)]
-    fn reserve<T>(&self, ptr: TaggedCnt<T>, shield: &mut Self::RawShield<T>) {
-        *shield = AcquiredEBR(ptr);
+    pub(crate) fn reserve<T>(&self, ptr: TaggedCnt<T>, shield: &mut TaggedCnt<T>) {
+        *shield = ptr;
     }
 
     #[inline(always)]
-    fn acquire<T, F>(&self, load: F, shield: &mut Self::RawShield<T>) -> TaggedCnt<T>
+    pub(crate) fn acquire<T, F>(&self, load: F, shield: &mut TaggedCnt<T>) -> TaggedCnt<T>
     where
         F: Fn(Ordering) -> TaggedCnt<T>,
     {
         let ptr = load(Ordering::Acquire);
-        *shield = AcquiredEBR(ptr);
+        *shield = ptr;
         ptr
     }
 
     #[inline]
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         if let Some(guard) = self.guard_mut() {
             guard.repin();
         }
     }
 
     #[inline]
-    fn increment_strong<T>(inner: &RcInner<T>) -> bool {
+    pub(crate) fn increment_strong<T>(inner: &RcInner<T>) -> bool {
         let val = State::from_raw(inner.state.fetch_add(COUNT, Ordering::SeqCst));
         if val.destructed() {
             return false;
@@ -261,7 +191,7 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    unsafe fn decrement_strong<T: GraphNode<Self>>(
+    pub(crate) unsafe fn decrement_strong<T: GraphNode>(
         inner: &mut RcInner<T>,
         count: u32,
         cs: Option<&Self>,
@@ -303,7 +233,7 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    unsafe fn try_destruct<T: GraphNode<Self>>(inner: &mut RcInner<T>) {
+    unsafe fn try_destruct<T: GraphNode>(inner: &mut RcInner<T>) {
         let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
         debug_assert!(!old.destructed());
         loop {
@@ -334,7 +264,7 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    fn increment_weak<T>(inner: &RcInner<T>, count: u32) {
+    pub(crate) fn increment_weak<T>(inner: &RcInner<T>, count: u32) {
         let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
         while !old.weaked() {
             // In this case, `increment_weak` must have been called from `Rc::downgrade`,
@@ -363,7 +293,7 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    unsafe fn decrement_weak<T>(inner: &mut RcInner<T>, cs: Option<&Self>) {
+    pub(crate) unsafe fn decrement_weak<T>(inner: &mut RcInner<T>, cs: Option<&Self>) {
         debug_assert!(State::from_raw(inner.state.load(Ordering::SeqCst)).weak() >= 1);
         if State::from_raw(inner.state.fetch_sub(WEAK_COUNT, Ordering::SeqCst)).weak() == 1 {
             cs.defer(inner, |inner| Self::try_dealloc(inner));
@@ -371,7 +301,7 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    fn non_zero<T>(inner: &RcInner<T>) -> bool {
+    pub(crate) fn non_zero<T>(inner: &RcInner<T>) -> bool {
         let mut old = State::from_raw(inner.state.load(Ordering::SeqCst));
         while !old.destructed() && old.strong() == 0 {
             match inner.state.compare_exchange(
@@ -388,17 +318,26 @@ impl Cs for CsEBR {
     }
 
     #[inline]
-    fn timestamp() -> Option<usize> {
+    pub(crate) fn timestamp() -> Option<usize> {
         Some(default_collector().global_epoch().value())
     }
 
-    fn strong_count<T>(inner: &RcInner<T>) -> u32 {
+    pub(crate) fn strong_count<T>(inner: &RcInner<T>) -> u32 {
         State::from_raw(inner.state.load(Ordering::Relaxed)).strong()
     }
 }
 
+impl From<Guard> for CsEBR {
+    #[inline(always)]
+    fn from(guard: Guard) -> Self {
+        Self {
+            guard: Some(UnsafeCell::new(guard)),
+        }
+    }
+}
+
 #[inline]
-unsafe fn dispose<T: GraphNode<CsEBR>>(inner: *mut RcInner<T>) {
+unsafe fn dispose<T: GraphNode>(inner: *mut RcInner<T>) {
     DISPOSE_COUNTER.with(|counter| {
         let cs = &CsEBR::new();
         if T::UNIQUE_OUTDEGREE {
@@ -410,7 +349,7 @@ unsafe fn dispose<T: GraphNode<CsEBR>>(inner: *mut RcInner<T>) {
 }
 
 #[inline]
-unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
+unsafe fn dispose_general_node<T: GraphNode>(
     ptr: *mut RcInner<T>,
     depth: usize,
     counter: &Cell<usize>,
@@ -498,11 +437,7 @@ unsafe fn dispose_general_node<T: GraphNode<CsEBR>>(
 }
 
 #[inline]
-unsafe fn dispose_list<T: GraphNode<CsEBR>>(
-    root: *mut RcInner<T>,
-    counter: &Cell<usize>,
-    cs: &CsEBR,
-) {
+unsafe fn dispose_list<T: GraphNode>(root: *mut RcInner<T>, counter: &Cell<usize>, cs: &CsEBR) {
     let mut ptr = Some(root);
     let mut curr_epoch = default_collector().global_epoch().value();
     let mut modu: Modular<EPOCH_WIDTH> = Modular::new(curr_epoch as isize + 1);

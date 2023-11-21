@@ -84,23 +84,23 @@ pub struct Node<K, V> {
     key: Key<K>,
     value: Option<V>,
     // tag on low bits: {Clean, DFlag, IFlag, Mark}
-    update: AtomicRc<Update<K, V>, CsEBR>,
-    left: AtomicRc<Node<K, V>, CsEBR>,
-    right: AtomicRc<Node<K, V>, CsEBR>,
+    update: AtomicRc<Update<K, V>>,
+    left: AtomicRc<Node<K, V>>,
+    right: AtomicRc<Node<K, V>>,
 }
 
-impl<K, V> GraphNode<CsEBR> for Node<K, V> {
+impl<K, V> GraphNode for Node<K, V> {
     const UNIQUE_OUTDEGREE: bool = false;
 
     #[inline]
-    fn pop_outgoings(&mut self, _: &mut Vec<Rc<Self, CsEBR>>)
+    fn pop_outgoings(&mut self, _: &mut Vec<Rc<Self>>)
     where
         Self: Sized,
     {
     }
 
     #[inline]
-    fn pop_unique(&mut self) -> Rc<Self, CsEBR>
+    fn pop_unique(&mut self) -> Rc<Self>
     where
         Self: Sized,
     {
@@ -109,25 +109,25 @@ impl<K, V> GraphNode<CsEBR> for Node<K, V> {
 }
 
 pub struct Update<K, V> {
-    gp: Weak<Node<K, V>, CsEBR>,
-    p: Weak<Node<K, V>, CsEBR>,
-    l: Rc<Node<K, V>, CsEBR>,
-    pupdate: Rc<Update<K, V>, CsEBR>,
-    new_internal: Rc<Node<K, V>, CsEBR>,
+    gp: Weak<Node<K, V>>,
+    p: Weak<Node<K, V>>,
+    l: Rc<Node<K, V>>,
+    pupdate: Rc<Update<K, V>>,
+    new_internal: Rc<Node<K, V>>,
 }
 
-impl<K, V> GraphNode<CsEBR> for Update<K, V> {
+impl<K, V> GraphNode for Update<K, V> {
     const UNIQUE_OUTDEGREE: bool = false;
 
     #[inline]
-    fn pop_outgoings(&mut self, _: &mut Vec<Rc<Self, CsEBR>>)
+    fn pop_outgoings(&mut self, _: &mut Vec<Rc<Self>>)
     where
         Self: Sized,
     {
     }
 
     #[inline]
-    fn pop_unique(&mut self) -> Rc<Self, CsEBR>
+    fn pop_unique(&mut self) -> Rc<Self>
     where
         Self: Sized,
     {
@@ -156,7 +156,7 @@ impl<K, V> Node<K, V> {
         }
     }
 
-    pub fn child(&self, dir: Direction) -> &AtomicRc<Node<K, V>, CsEBR> {
+    pub fn child(&self, dir: Direction) -> &AtomicRc<Node<K, V>> {
         match dir {
             Direction::L => &self.left,
             Direction::R => &self.right,
@@ -169,15 +169,15 @@ impl<K, V> Node<K, V> {
 }
 
 pub struct Cursor<K, V> {
-    gp: Snapshot<Node<K, V>, CsEBR>,
-    p: Snapshot<Node<K, V>, CsEBR>,
-    l: Snapshot<Node<K, V>, CsEBR>,
-    pupdate: Snapshot<Update<K, V>, CsEBR>,
-    gpupdate: Snapshot<Update<K, V>, CsEBR>,
+    gp: Snapshot<Node<K, V>>,
+    p: Snapshot<Node<K, V>>,
+    l: Snapshot<Node<K, V>>,
+    pupdate: Snapshot<Update<K, V>>,
+    gpupdate: Snapshot<Update<K, V>>,
 }
 
 impl<K, V> Cursor<K, V> {
-    fn new(root: &AtomicRc<Node<K, V>, CsEBR>, cs: &CsEBR) -> Self {
+    fn new(root: &AtomicRc<Node<K, V>>, cs: &CsEBR) -> Self {
         let l = root.load_ss(cs);
         Self {
             gp: Snapshot::new(),
@@ -226,8 +226,8 @@ where
 }
 
 pub struct Helper<K, V> {
-    gp: Snapshot<Node<K, V>, CsEBR>,
-    p: Snapshot<Node<K, V>, CsEBR>,
+    gp: Snapshot<Node<K, V>>,
+    p: Snapshot<Node<K, V>>,
 }
 
 impl<K, V> Helper<K, V> {
@@ -238,7 +238,7 @@ impl<K, V> Helper<K, V> {
         }
     }
 
-    fn load_delete(&mut self, op: Snapshot<Update<K, V>, CsEBR>, cs: &CsEBR) -> bool {
+    fn load_delete(&mut self, op: Snapshot<Update<K, V>>, cs: &CsEBR) -> bool {
         let op_ref = unsafe { op.deref() };
 
         let gp_ref = if self.gp.protect_weak(&op_ref.gp, cs) {
@@ -264,7 +264,7 @@ impl<K, V> Helper<K, V> {
 }
 
 pub struct EFRBTree<K, V> {
-    root: AtomicRc<Node<K, V>, CsEBR>,
+    root: AtomicRc<Node<K, V>>,
 }
 
 impl<K, V> EFRBTree<K, V> {
@@ -285,7 +285,7 @@ where
     K: Ord + Clone,
     V: Clone,
 {
-    pub fn find(&self, key: &K, cs: &CsEBR) -> Option<Snapshot<Node<K, V>, CsEBR>> {
+    pub fn find(&self, key: &K, cs: &CsEBR) -> Option<Snapshot<Node<K, V>>> {
         let mut cursor = Cursor::new(&self.root, cs);
         cursor.search(key, cs);
         let l_node = cursor.l.as_ref().unwrap();
@@ -361,7 +361,7 @@ where
         }
     }
 
-    pub fn delete(&self, key: &K, cs: &CsEBR) -> Option<Snapshot<Node<K, V>, CsEBR>> {
+    pub fn delete(&self, key: &K, cs: &CsEBR) -> Option<Snapshot<Node<K, V>>> {
         loop {
             let mut cursor = Cursor::new(&self.root, cs);
             cursor.search(key, cs);
@@ -421,7 +421,7 @@ where
     }
 
     #[inline]
-    fn help(&self, op: Snapshot<Update<K, V>, CsEBR>, cs: &CsEBR) {
+    fn help(&self, op: Snapshot<Update<K, V>>, cs: &CsEBR) {
         match UpdateTag::from_bits_truncate(op.tag()) {
             UpdateTag::IFLAG => self.help_insert(op, cs),
             UpdateTag::MARK => self.help_marked(op, cs),
@@ -432,7 +432,7 @@ where
         }
     }
 
-    fn help_delete(&self, op: Snapshot<Update<K, V>, CsEBR>, cs: &CsEBR) -> bool {
+    fn help_delete(&self, op: Snapshot<Update<K, V>>, cs: &CsEBR) -> bool {
         // Precondition: op points to a DInfo record (i.e., it is not ⊥)
         let mut helper = Helper::new();
         if !helper.load_delete(op, cs) {
@@ -477,7 +477,7 @@ where
         }
     }
 
-    fn help_marked(&self, op: Snapshot<Update<K, V>, CsEBR>, cs: &CsEBR) {
+    fn help_marked(&self, op: Snapshot<Update<K, V>>, cs: &CsEBR) {
         // Precondition: op points to a DInfo record (i.e., it is not ⊥)
         let mut helper = Helper::new();
         if !helper.load_delete(op, cs) {
@@ -508,7 +508,7 @@ where
         );
     }
 
-    fn help_insert(&self, op: Snapshot<Update<K, V>, CsEBR>, cs: &CsEBR) {
+    fn help_insert(&self, op: Snapshot<Update<K, V>>, cs: &CsEBR) {
         // Precondition: op points to a IInfo record (i.e., it is not ⊥)
         let op_ref = unsafe { op.deref() };
         let mut p = Snapshot::new();
@@ -538,9 +538,9 @@ where
 
     fn cas_child(
         &self,
-        parent: Snapshot<Node<K, V>, CsEBR>,
-        old: Snapshot<Node<K, V>, CsEBR>,
-        new: Snapshot<Node<K, V>, CsEBR>,
+        parent: Snapshot<Node<K, V>>,
+        old: Snapshot<Node<K, V>>,
+        new: Snapshot<Node<K, V>>,
         cs: &CsEBR,
     ) -> bool {
         let new_node = unsafe { new.deref() };
@@ -565,7 +565,7 @@ where
 #[test]
 fn smoke() {
     extern crate rand;
-    use circ::Cs;
+    use circ::CsEBR;
     use crossbeam_utils::thread;
     use rand::prelude::*;
 
@@ -582,7 +582,7 @@ fn smoke() {
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
                 for i in keys {
-                    assert!(map.insert(i, i.to_string(), &Cs::new()));
+                    assert!(map.insert(i, i.to_string(), &CsEBR::new()));
                 }
             });
         }
@@ -596,7 +596,7 @@ fn smoke() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let cs = &mut Cs::new();
+                let cs = &mut CsEBR::new();
                 for i in keys {
                     assert_eq!(
                         i.to_string(),
@@ -619,7 +619,7 @@ fn smoke() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let cs = &mut Cs::new();
+                let cs = &mut CsEBR::new();
                 for i in keys {
                     assert_eq!(
                         i.to_string(),

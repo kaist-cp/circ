@@ -552,10 +552,3 @@ pub unsafe fn unprotected() -> &'static Guard {
     });
     &UNPROTECTED.0
 }
-
-/// doesn't drop at all
-#[inline]
-pub unsafe fn leaking() -> &'static Guard {
-    static LEAKING: usize = 1;
-    &*(&LEAKING as *const _ as *const Guard)
-}

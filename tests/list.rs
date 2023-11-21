@@ -1,7 +1,8 @@
 use atomic::Ordering;
-use circ::{AtomicRc, Cs, GraphNode, Pointer, Rc, Snapshot, StrongPtr, TaggedCnt};
+use circ::{AtomicRc, CsEBR, GraphNode, Pointer, Rc, Snapshot, StrongPtr, TaggedCnt};
 
 use std::cmp::Ordering::{Equal, Greater, Less};
+use std::mem::swap;
 
 /// Some or executing the given expression.
 macro_rules! some_or {
@@ -13,23 +14,23 @@ macro_rules! some_or {
     }};
 }
 
-struct Node<K, V, C: Cs> {
-    next: AtomicRc<Self, C>,
+struct Node<K, V> {
+    next: AtomicRc<Self>,
     key: K,
     value: V,
 }
 
-impl<K, V, C: Cs> GraphNode<C> for Node<K, V, C> {
+impl<K, V> GraphNode for Node<K, V> {
     const UNIQUE_OUTDEGREE: bool = true;
 
-    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self, C>>)
+    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>)
     where
         Self: Sized,
     {
         result.push(self.next.swap(Rc::null(), Ordering::Relaxed));
     }
 
-    fn pop_unique(&mut self) -> Rc<Self, C>
+    fn pop_unique(&mut self) -> Rc<Self>
     where
         Self: Sized,
     {
@@ -37,26 +38,24 @@ impl<K, V, C: Cs> GraphNode<C> for Node<K, V, C> {
     }
 }
 
-struct List<K, V, C: Cs> {
-    head: AtomicRc<Node<K, V, C>, C>,
+struct List<K, V> {
+    head: AtomicRc<Node<K, V>>,
 }
 
-impl<K, V, C> Default for List<K, V, C>
+impl<K, V> Default for List<K, V>
 where
     K: Ord + Default,
     V: Default,
-    C: Cs,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K, V, C> Node<K, V, C>
+impl<K, V> Node<K, V>
 where
     K: Default,
     V: Default,
-    C: Cs,
 {
     /// Creates a new node.
     fn new(key: K, value: V) -> Self {
@@ -78,18 +77,18 @@ where
     }
 }
 
-struct Cursor<K, V, C: Cs> {
+struct Cursor<K, V> {
     // `Snapshot`s are used only for traversing the list.
-    prev: Snapshot<Node<K, V, C>, C>,
+    prev: Snapshot<Node<K, V>>,
     // We don't have to protect the next pointer of `prev`.
-    prev_next: TaggedCnt<Node<K, V, C>>,
+    prev_next: TaggedCnt<Node<K, V>>,
     // Tag of `curr` should always be zero so when `curr` is stored in a `prev`, we don't store a
     // tagged pointer and cause cleanup to fail.
-    curr: Snapshot<Node<K, V, C>, C>,
-    next: Snapshot<Node<K, V, C>, C>,
+    curr: Snapshot<Node<K, V>>,
+    next: Snapshot<Node<K, V>>,
 }
 
-impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
+impl<K: Ord, V> Cursor<K, V> {
     fn new() -> Self {
         Self {
             prev: Snapshot::new(),
@@ -100,7 +99,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
     }
 
     /// Initializes a cursor.
-    fn initialize(&mut self, head: &AtomicRc<Node<K, V, C>, C>, cs: &C) {
+    fn initialize(&mut self, head: &AtomicRc<Node<K, V>>, cs: &CsEBR) {
         self.prev.load(head, cs);
         self.curr.load(&unsafe { self.prev.deref() }.next, cs);
         self.prev_next = self.curr.as_ptr();
@@ -108,7 +107,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
 
     /// Clean up a chain of logically removed nodes in each traversal.
     #[inline]
-    fn find_harris(&mut self, key: &K, cs: &C) -> Result<bool, ()> {
+    fn find_harris(&mut self, key: &K, cs: &CsEBR) -> Result<bool, ()> {
         // Finding phase
         // - cursor.curr: first untagged node w/ key >= search key (4)
         // - cursor.prev: the ref of .next in previous untagged node (1 -> 2)
@@ -124,15 +123,15 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
 
             if self.next.tag() != 0 {
                 // We add a 0 tag here so that `self.curr`s tag is always 0.
-                self.next.set_tag(0);
-                Snapshot::swap(&mut self.next, &mut self.curr);
+                self.next = self.next.with_tag(0);
+                swap(&mut self.next, &mut self.curr);
                 continue;
             }
 
             match curr_node.key.cmp(key) {
                 Less => {
-                    Snapshot::swap(&mut self.prev, &mut self.curr);
-                    Snapshot::swap(&mut self.curr, &mut self.next);
+                    swap(&mut self.prev, &mut self.curr);
+                    swap(&mut self.curr, &mut self.next);
                     self.prev_next = self.curr.as_ptr();
                 }
                 Equal => break true,
@@ -162,11 +161,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
 
     /// Inserts a value.
     #[inline]
-    pub fn insert(
-        &mut self,
-        node: Rc<Node<K, V, C>, C>,
-        cs: &C,
-    ) -> Result<(), Rc<Node<K, V, C>, C>> {
+    pub fn insert(&mut self, node: Rc<Node<K, V>>, cs: &CsEBR) -> Result<(), Rc<Node<K, V>>> {
         unsafe { node.deref() }
             .next
             .swap(self.curr.upgrade(), Ordering::Relaxed);
@@ -185,7 +180,7 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
 
     /// removes the current node.
     #[inline]
-    pub fn remove(&mut self, cs: &C) -> Result<(), ()> {
+    pub fn remove(&mut self, cs: &CsEBR) -> Result<(), ()> {
         let curr_node = unsafe { self.curr.deref() };
 
         self.next.load(&curr_node.next, cs);
@@ -215,11 +210,10 @@ impl<K: Ord, V, C: Cs> Cursor<K, V, C> {
     }
 }
 
-impl<K, V, C> List<K, V, C>
+impl<K, V> List<K, V>
 where
     K: Ord + Default,
     V: Default,
-    C: Cs,
 {
     /// Creates a new list.
     pub fn new() -> Self {
@@ -229,9 +223,9 @@ where
     }
 
     #[inline]
-    fn get<F>(&self, key: &K, find: F, cursor: &mut Cursor<K, V, C>, cs: &C) -> bool
+    fn get<F>(&self, key: &K, find: F, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool
     where
-        F: Fn(&mut Cursor<K, V, C>, &K, &C) -> Result<bool, ()>,
+        F: Fn(&mut Cursor<K, V>, &K, &CsEBR) -> Result<bool, ()>,
     {
         loop {
             cursor.initialize(&self.head, cs);
@@ -242,9 +236,9 @@ where
     }
 
     #[inline]
-    fn insert<F>(&self, key: K, value: V, find: F, cursor: &mut Cursor<K, V, C>, cs: &C) -> bool
+    fn insert<F>(&self, key: K, value: V, find: F, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool
     where
-        F: Fn(&mut Cursor<K, V, C>, &K, &C) -> Result<bool, ()>,
+        F: Fn(&mut Cursor<K, V>, &K, &CsEBR) -> Result<bool, ()>,
     {
         let mut node = Rc::new(Node::new(key, value));
         loop {
@@ -261,9 +255,9 @@ where
     }
 
     #[inline]
-    fn remove<F>(&self, key: &K, find: F, cursor: &mut Cursor<K, V, C>, cs: &C) -> bool
+    fn remove<F>(&self, key: &K, find: F, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool
     where
-        F: Fn(&mut Cursor<K, V, C>, &K, &C) -> Result<bool, ()>,
+        F: Fn(&mut Cursor<K, V>, &K, &CsEBR) -> Result<bool, ()>,
     {
         loop {
             let found = self.get(key, &find, cursor, cs);
@@ -279,23 +273,23 @@ where
     }
 
     /// Omitted
-    pub fn harris_get(&self, key: &K, cursor: &mut Cursor<K, V, C>, cs: &C) -> bool {
+    pub fn harris_get(&self, key: &K, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool {
         self.get(key, Cursor::find_harris, cursor, cs)
     }
 
     /// Omitted
-    pub fn harris_insert(&self, key: K, value: V, cursor: &mut Cursor<K, V, C>, cs: &C) -> bool {
+    pub fn harris_insert(&self, key: K, value: V, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool {
         self.insert(key, value, Cursor::find_harris, cursor, cs)
     }
 
     /// Omitted
-    pub fn harris_remove(&self, key: &K, cursor: &mut Cursor<K, V, C>, cs: &C) -> bool {
+    pub fn harris_remove(&self, key: &K, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool {
         self.remove(key, Cursor::find_harris, cursor, cs)
     }
 }
 
-#[cfg(test)]
-fn smoke<C: Cs>() {
+#[test]
+fn smoke() {
     extern crate rand;
     use crossbeam_utils::thread;
     use rand::prelude::*;
@@ -314,7 +308,7 @@ fn smoke<C: Cs>() {
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
                 for i in keys {
-                    assert!(map.harris_insert(i, i.to_string(), cursor, &C::new()));
+                    assert!(map.harris_insert(i, i.to_string(), cursor, &CsEBR::new()));
                 }
             });
         }
@@ -329,7 +323,7 @@ fn smoke<C: Cs>() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let cs = &mut C::new();
+                let cs = &mut CsEBR::new();
                 for i in keys {
                     assert!(map.harris_remove(&i, cursor, cs));
                     assert_eq!(i.to_string(), unsafe { cursor.curr.deref() }.value);
@@ -348,7 +342,7 @@ fn smoke<C: Cs>() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let cs = &mut C::new();
+                let cs = &mut CsEBR::new();
                 for i in keys {
                     assert!(map.harris_get(&i, cursor, cs));
                     assert_eq!(i.to_string(), unsafe { cursor.curr.deref() }.value);
@@ -358,9 +352,4 @@ fn smoke<C: Cs>() {
         }
     })
     .unwrap();
-}
-
-#[test]
-fn smoke_ebr() {
-    smoke::<circ::CsEBR>();
 }
