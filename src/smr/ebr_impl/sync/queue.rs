@@ -13,15 +13,16 @@ use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 use crossbeam_utils::{Backoff, CachePadded};
 
-use super::super::{unprotected, Atomic, Guard, Owned, Shared};
+use crate::ebr_impl::{RawAtomic, RawShared};
+
+use super::super::{unprotected, Guard};
 
 // The representation here is a singly-linked list, with a sentinel node at the front. In general
 // the `tail` pointer may lag behind the actual tail. Non-sentinel nodes are either all `Data` or
 // all `Blocked` (requests for data from blocked threads).
-#[derive(Debug)]
 pub(crate) struct Queue<T> {
-    head: CachePadded<Atomic<Node<T>>>,
-    tail: CachePadded<Atomic<Node<T>>>,
+    head: CachePadded<RawAtomic<Node<T>>>,
+    tail: CachePadded<RawAtomic<Node<T>>>,
 }
 
 struct Node<T> {
@@ -33,7 +34,7 @@ struct Node<T> {
     /// out. After that such empty nodes get added to the collector for destruction.
     data: MaybeUninit<T>,
 
-    next: Atomic<Node<T>>,
+    next: RawAtomic<Node<T>>,
 }
 
 // Any particular `T` should never be accessed concurrently, so no need for `Sync`.
@@ -44,20 +45,16 @@ impl<T> Queue<T> {
     /// Create a new, empty queue.
     pub(crate) fn new() -> Queue<T> {
         let q = Queue {
-            head: CachePadded::new(Atomic::null()),
-            tail: CachePadded::new(Atomic::null()),
+            head: CachePadded::new(RawAtomic::null()),
+            tail: CachePadded::new(RawAtomic::null()),
         };
-        let sentinel = Owned::new(Node {
+        let sentinel = RawShared::from_owned(Node {
             data: MaybeUninit::uninit(),
-            next: Atomic::null(),
+            next: RawAtomic::null(),
         });
-        unsafe {
-            let guard = unprotected();
-            let sentinel = sentinel.into_shared(guard);
-            q.head.store(sentinel, Relaxed);
-            q.tail.store(sentinel, Relaxed);
-            q
-        }
+        q.head.store(sentinel, Relaxed);
+        q.tail.store(sentinel, Relaxed);
+        q
     }
 
     /// Attempts to atomically place `n` into the `next` pointer of `onto`, and returns `true` on
@@ -65,8 +62,8 @@ impl<T> Queue<T> {
     #[inline(always)]
     fn push_internal(
         &self,
-        onto: Shared<'_, Node<T>>,
-        new: Shared<'_, Node<T>>,
+        onto: RawShared<'_, Node<T>>,
+        new: RawShared<'_, Node<T>>,
         guard: &Guard,
     ) -> bool {
         // is `onto` the actual tail?
@@ -82,7 +79,7 @@ impl<T> Queue<T> {
             // looks like the actual tail; attempt to link in `n`
             let result = o
                 .next
-                .compare_exchange(Shared::null(), new, Release, Relaxed, guard)
+                .compare_exchange(RawShared::null(), new, Release, Relaxed, guard)
                 .is_ok();
             if result {
                 // try to move the tail pointer forward
@@ -96,11 +93,10 @@ impl<T> Queue<T> {
 
     /// Adds `t` to the back of the queue, possibly waking up threads blocked on `pop`.
     pub(crate) fn push(&self, t: T, guard: &Guard) {
-        let new = Owned::new(Node {
+        let new = RawShared::from_owned(Node {
             data: MaybeUninit::new(t),
-            next: Atomic::null(),
+            next: RawAtomic::null(),
         });
-        let new = Owned::into_shared(new, guard);
 
         loop {
             // We push onto the tail, so we'll start optimistically by looking there first.

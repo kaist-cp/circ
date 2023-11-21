@@ -37,6 +37,7 @@
 
 use super::primitive::cell::UnsafeCell;
 use super::primitive::sync::atomic;
+use super::RawShared;
 use core::cell::Cell;
 use core::mem::{self, ManuallyDrop};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -45,7 +46,6 @@ use core::{fmt, ptr};
 use crossbeam_utils::CachePadded;
 use memoffset::offset_of;
 
-use super::atomic::{Owned, Shared};
 use super::collector::{Collector, LocalHandle};
 use super::deferred::Deferred;
 use super::epoch::{AtomicEpoch, Epoch};
@@ -336,7 +336,7 @@ impl Local {
         unsafe {
             // Since we dereference no pointers in this block, it is safe to use `unprotected`.
 
-            let local = Owned::new(Local {
+            let local = RawShared::from_owned(Local {
                 entry: Entry::default(),
                 collector: UnsafeCell::new(ManuallyDrop::new(collector.clone())),
                 bag: UnsafeCell::new(Bag::new()),
@@ -349,8 +349,7 @@ impl Local {
                 must_collect: Cell::new(false),
                 collecting: Cell::new(false),
                 epoch: CachePadded::new(AtomicEpoch::new(Epoch::starting())),
-            })
-            .into_shared(unprotected());
+            });
             collector.global.locals.insert(local, unprotected());
             LocalHandle {
                 local: local.as_raw(),
@@ -626,7 +625,7 @@ impl IsElement<Local> for Local {
     }
 
     unsafe fn finalize(entry: &Entry, guard: &Guard) {
-        guard.defer_destroy(Shared::from(Self::element_of(entry) as *const _));
+        guard.defer_destroy(RawShared::from(Self::element_of(entry) as *const Local));
     }
 }
 

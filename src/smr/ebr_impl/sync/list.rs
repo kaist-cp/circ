@@ -4,19 +4,20 @@
 //! 2002.  <http://dl.acm.org/citation.cfm?id=564870.564881>
 
 use core::marker::PhantomData;
-use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-use super::super::{unprotected, Atomic, Guard, Shared};
+use crate::ebr_impl::{RawAtomic, RawShared};
+
+use super::super::{unprotected, Guard};
 
 /// An entry in a linked list.
 ///
 /// An Entry is accessed from multiple threads, so it would be beneficial to put it in a different
 /// cache-line than thread-local data in terms of performance.
-#[derive(Debug)]
 pub(crate) struct Entry {
     /// The next entry in the linked list.
     /// If the tag is 1, this entry is marked as deleted.
-    next: Atomic<Entry>,
+    next: RawAtomic<Entry>,
 }
 
 /// Implementing this trait asserts that the type `T` can be used as an element in the intrusive
@@ -92,10 +93,9 @@ pub(crate) trait IsElement<T> {
 }
 
 /// A lock-free, intrusive linked list of type `T`.
-#[derive(Debug)]
 pub(crate) struct List<T, C: IsElement<T> = T> {
     /// The head of the linked list.
-    head: Atomic<Entry>,
+    head: RawAtomic<Entry>,
 
     /// The phantom data for using `T` and `C`.
     _marker: PhantomData<(T, C)>,
@@ -107,13 +107,13 @@ pub(crate) struct Iter<'g, T, C: IsElement<T>> {
     guard: &'g Guard,
 
     /// Pointer from the predecessor to the current entry.
-    pred: &'g Atomic<Entry>,
+    pred: &'g RawAtomic<Entry>,
 
     /// The current entry.
-    curr: Shared<'g, Entry>,
+    curr: RawShared<'g, Entry>,
 
     /// The list head, needed for restarting iteration.
-    head: &'g Atomic<Entry>,
+    head: &'g RawAtomic<Entry>,
 
     /// Logically, we store a borrow of an instance of `T` and
     /// use the type information from `C`.
@@ -132,7 +132,7 @@ impl Default for Entry {
     /// Returns the empty entry.
     fn default() -> Self {
         Self {
-            next: Atomic::null(),
+            next: RawAtomic::null(),
         }
     }
 }
@@ -154,7 +154,7 @@ impl<T, C: IsElement<T>> List<T, C> {
     /// Returns a new, empty linked list.
     pub(crate) fn new() -> Self {
         Self {
-            head: Atomic::null(),
+            head: RawAtomic::null(),
             _marker: PhantomData,
         }
     }
@@ -169,13 +169,13 @@ impl<T, C: IsElement<T>> List<T, C> {
     /// - `container` is immovable, e.g. inside an `Owned`
     /// - the same `Entry` is not inserted more than once
     /// - the inserted object will be removed before the list is dropped
-    pub(crate) unsafe fn insert<'g>(&'g self, container: Shared<'g, T>, guard: &'g Guard) {
+    pub(crate) unsafe fn insert<'g>(&'g self, container: RawShared<'g, T>, guard: &'g Guard) {
         // Insert right after head, i.e. at the beginning of the list.
         let to = &self.head;
         // Get the intrusively stored Entry of the new element to insert.
         let entry: &Entry = C::entry_of(container.deref());
         // Make a Shared ptr to that Entry.
-        let entry_ptr = Shared::from(entry as *const _);
+        let entry_ptr = RawShared::from(entry as *const _);
         // Read the current successor of where we want to insert.
         let mut next = to.load(Relaxed, guard);
 
@@ -187,7 +187,7 @@ impl<T, C: IsElement<T>> List<T, C> {
                 Ok(_) => break,
                 // We lost the race or weak CAS failed spuriously. Update the successor and try
                 // again.
-                Err(err) => next = err.current,
+                Err(curr) => next = curr,
             }
         }
     }
@@ -263,9 +263,9 @@ impl<'g, T: 'g, C: IsElement<T>> Iterator for Iter<'g, T, C> {
                         // `succ` is the new value of `self.pred`.
                         succ
                     }
-                    Err(e) => {
-                        // `e.current` is the current value of `self.pred`.
-                        e.current
+                    Err(curr) => {
+                        // `curr` is the current value of `self.pred`.
+                        curr
                     }
                 };
 
@@ -298,7 +298,7 @@ impl<'g, T: 'g, C: IsElement<T>> Iterator for Iter<'g, T, C> {
 #[cfg(all(test, not(crossbeam_loom)))]
 mod tests {
     use super::*;
-    use crate::ebr_impl::{Collector, Owned};
+    use crate::ebr_impl::Collector;
     use crossbeam_utils::thread;
     use std::sync::Barrier;
 
@@ -312,7 +312,7 @@ mod tests {
         }
 
         unsafe fn finalize(entry: &Entry, guard: &Guard) {
-            guard.defer_destroy(Shared::from(Self::element_of(entry) as *const _));
+            guard.defer_destroy(RawShared::from(Self::element_of(entry) as *const _));
         }
     }
 
@@ -326,9 +326,9 @@ mod tests {
 
         let l: List<Entry> = List::new();
 
-        let e1 = Owned::new(Entry::default()).into_shared(&guard);
-        let e2 = Owned::new(Entry::default()).into_shared(&guard);
-        let e3 = Owned::new(Entry::default()).into_shared(&guard);
+        let e1 = RawShared::from_owned(Entry::default());
+        let e2 = RawShared::from_owned(Entry::default());
+        let e3 = RawShared::from_owned(Entry::default());
 
         unsafe {
             l.insert(e1, &guard);
@@ -365,9 +365,9 @@ mod tests {
 
         let l: List<Entry> = List::new();
 
-        let e1 = Owned::new(Entry::default()).into_shared(&guard);
-        let e2 = Owned::new(Entry::default()).into_shared(&guard);
-        let e3 = Owned::new(Entry::default()).into_shared(&guard);
+        let e1 = RawShared::from_owned(Entry::default());
+        let e2 = RawShared::from_owned(Entry::default());
+        let e3 = RawShared::from_owned(Entry::default());
         unsafe {
             l.insert(e1, &guard);
             l.insert(e2, &guard);
@@ -414,7 +414,7 @@ mod tests {
                     let mut v = Vec::with_capacity(ITERS);
 
                     for _ in 0..ITERS {
-                        let e = Owned::new(Entry::default()).into_shared(&guard);
+                        let e = RawShared::from_owned(Entry::default());
                         v.push(e);
                         unsafe {
                             l.insert(e, &guard);
@@ -456,7 +456,7 @@ mod tests {
                     let mut v = Vec::with_capacity(ITERS);
 
                     for _ in 0..ITERS {
-                        let e = Owned::new(Entry::default()).into_shared(&guard);
+                        let e = RawShared::from_owned(Entry::default());
                         v.push(e);
                         unsafe {
                             l.insert(e, &guard);

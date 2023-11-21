@@ -125,7 +125,7 @@ impl<T> AtomicWeak<T> {
         // The equality of the sizes is checked by `const_assert!`.
         let link = unsafe { &*(&self.link as *const _ as *const AtomicUsize) };
         let prev = link.fetch_or(tag, order);
-        TaggedCnt::new(prev as *mut _)
+        TaggedCnt::from(prev as *mut _)
     }
 }
 
@@ -199,7 +199,7 @@ impl<T> Weak<T> {
 
     #[inline(always)]
     pub fn untagged(mut self) -> Self {
-        self.ptr = TaggedCnt::new(self.ptr.as_raw());
+        self.ptr = TaggedCnt::from(self.ptr.as_raw());
         self
     }
 

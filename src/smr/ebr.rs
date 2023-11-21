@@ -3,9 +3,9 @@ use std::mem::ManuallyDrop;
 
 use atomic::Ordering;
 
-use super::ebr_impl::{default_collector, pin, Guard};
+use super::ebr_impl::{default_collector, pin, Guard, HIGH_TAG_WIDTH};
 use crate::utils::RcInner;
-use crate::{GraphNode, Pointer, TaggedCnt, HIGH_TAG_WIDTH};
+use crate::{GraphNode, Pointer, TaggedCnt};
 
 const EPOCH_WIDTH: u32 = HIGH_TAG_WIDTH;
 const EPOCH_MASK_HEIGHT: u32 = u64::BITS - EPOCH_WIDTH;

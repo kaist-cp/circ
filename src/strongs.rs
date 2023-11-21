@@ -328,7 +328,7 @@ impl<T: GraphNode> Rc<T> {
     pub fn new(obj: T) -> Self {
         let ptr = CsEBR::create_object(obj, 1);
         Self {
-            ptr: TaggedCnt::new(ptr),
+            ptr: TaggedCnt::from(ptr),
             _marker: PhantomData,
         }
     }
@@ -337,7 +337,7 @@ impl<T: GraphNode> Rc<T> {
     pub fn new_many<const N: usize>(obj: T) -> [Self; N] {
         let ptr = CsEBR::create_object(obj, N as _);
         [(); N].map(|_| Self {
-            ptr: TaggedCnt::new(ptr),
+            ptr: TaggedCnt::from(ptr),
             _marker: PhantomData,
         })
     }
@@ -347,7 +347,7 @@ impl<T: GraphNode> Rc<T> {
         let ptr = CsEBR::create_object(obj, count as _);
         NewRcIter {
             remain: count,
-            ptr: TaggedCnt::new(ptr),
+            ptr: TaggedCnt::from(ptr),
         }
     }
 

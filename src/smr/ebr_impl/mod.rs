@@ -48,12 +48,12 @@
 //! For majority of use cases, just use the default garbage collector by invoking [`pin`]. If you
 //! want to create your own garbage collector, use the [`Collector`] API.
 
-mod atomic;
 mod collector;
 mod deferred;
 mod epoch;
 mod guard;
 mod internal;
+mod pointers;
 mod sync;
 
 mod primitive {
@@ -93,11 +93,11 @@ mod primitive {
     }
 }
 
-pub use self::atomic::{Atomic, CompareExchangeError, Owned, Pointable, Pointer, Shared};
 pub use self::collector::{Collector, LocalHandle};
 pub use self::epoch::Epoch;
 pub use self::guard::{unprotected, Guard};
 pub use self::internal::set_bag_capacity;
+pub use self::pointers::*;
 
 mod default;
 pub use self::default::{default_collector, is_pinned, pin};

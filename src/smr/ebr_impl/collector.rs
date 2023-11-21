@@ -1,17 +1,4 @@
 /// Epoch-based garbage collector.
-///
-/// # Examples
-///
-/// ```
-/// use circ::ebr_impl::Collector;
-///
-/// let collector = Collector::new();
-///
-/// let handle = collector.register();
-/// drop(collector); // `handle` still works after dropping `collector`
-///
-/// handle.pin().flush();
-/// ```
 use core::fmt;
 use core::sync::atomic::Ordering;
 
@@ -129,7 +116,7 @@ mod tests {
 
     use crossbeam_utils::thread;
 
-    use crate::ebr_impl::{Collector, Owned};
+    use crate::ebr_impl::{Collector, RawShared};
 
     const NUM_THREADS: usize = 8;
 
@@ -161,7 +148,7 @@ mod tests {
         for _ in 0..100 {
             let guard = &handle.pin();
             unsafe {
-                let a = Owned::new(7).into_shared(guard);
+                let a = RawShared::from_owned(7);
                 guard.defer_destroy(a);
 
                 assert!(!(*guard.local).bag.with(|b| (*b).is_empty()));
@@ -182,7 +169,7 @@ mod tests {
         let guard = &handle.pin();
         unsafe {
             for _ in 0..10 {
-                let a = Owned::new(7).into_shared(guard);
+                let a = RawShared::from_owned(7);
                 guard.defer_destroy(a);
             }
             assert!(!(*guard.local).bag.with(|b| (*b).is_empty()));
@@ -232,9 +219,9 @@ mod tests {
         unsafe {
             let guard = &handle.pin();
             for _ in 0..COUNT {
-                let a = Owned::new(7i32).into_shared(guard);
+                let a = RawShared::from_owned(7);
                 guard.defer_unchecked(move || {
-                    drop(a.into_owned());
+                    a.into_owned();
                     DESTROYS.fetch_add(1, Ordering::Relaxed);
                 });
             }
@@ -277,7 +264,7 @@ mod tests {
             let guard = &handle.pin();
 
             for _ in 0..COUNT {
-                let a = Owned::new(Elem(7i32)).into_shared(guard);
+                let a = RawShared::from_owned(Elem(7));
                 guard.defer_destroy(a);
             }
             guard.flush();
@@ -305,9 +292,9 @@ mod tests {
             let guard = &handle.pin();
 
             for _ in 0..COUNT {
-                let a = Owned::new(7i32).into_shared(guard);
+                let a = RawShared::from_owned(7);
                 guard.defer_unchecked(move || {
-                    drop(a.into_owned());
+                    a.into_owned();
                     DESTROYS.fetch_add(1, Ordering::Relaxed);
                 });
             }
@@ -345,7 +332,7 @@ mod tests {
         }
 
         {
-            let a = Owned::new(v).into_shared(&guard);
+            let a = RawShared::from_owned(v);
             unsafe {
                 guard.defer_destroy(a);
             }
@@ -420,7 +407,7 @@ mod tests {
                     for _ in 0..COUNT {
                         let guard = &handle.pin();
                         unsafe {
-                            let a = Owned::new(Elem(7i32)).into_shared(guard);
+                            let a = RawShared::from_owned(Elem(7i32));
                             guard.defer_destroy(a);
                         }
                     }
