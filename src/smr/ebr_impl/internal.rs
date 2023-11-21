@@ -292,7 +292,7 @@ pub(crate) struct Local {
     collector: UnsafeCell<ManuallyDrop<Collector>>,
 
     /// The local bag of deferred functions.
-    /// 
+    ///
     /// Note that removing the global garbage queue and using only the thread local bags
     /// will increase the memory consumption in a queue workload.
     pub(crate) bag: UnsafeCell<Bag>,

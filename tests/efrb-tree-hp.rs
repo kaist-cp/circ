@@ -104,14 +104,14 @@ impl<K, V> GraphNode<CsHP> for Node<K, V> {
     const UNIQUE_OUTDEGREE: bool = false;
 
     #[inline]
-    fn pop_outgoings(&self, _: &mut Vec<Rc<Self, CsHP>>)
+    fn pop_outgoings(&mut self, _: &mut Vec<Rc<Self, CsHP>>)
     where
         Self: Sized,
     {
     }
 
     #[inline]
-    fn pop_unique(&self) -> Rc<Self, CsHP>
+    fn pop_unique(&mut self) -> Rc<Self, CsHP>
     where
         Self: Sized,
     {
@@ -134,14 +134,14 @@ impl<K, V> GraphNode<CsHP> for Update<K, V> {
     const UNIQUE_OUTDEGREE: bool = false;
 
     #[inline]
-    fn pop_outgoings(&self, _: &mut Vec<Rc<Self, CsHP>>)
+    fn pop_outgoings(&mut self, _: &mut Vec<Rc<Self, CsHP>>)
     where
         Self: Sized,
     {
     }
 
     #[inline]
-    fn pop_unique(&self) -> Rc<Self, CsHP>
+    fn pop_unique(&mut self) -> Rc<Self, CsHP>
     where
         Self: Sized,
     {
