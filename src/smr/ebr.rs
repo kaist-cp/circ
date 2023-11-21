@@ -5,8 +5,7 @@ use atomic::Ordering;
 
 use super::ebr_impl::{default_collector, pin, Guard};
 use crate::utils::RcInner;
-use crate::{Acquired, Cs, GraphNode, TaggedCnt, HIGH_TAG_WIDTH};
-use crate::{Pointer, Validatable};
+use crate::{Pointer, Acquired, Cs, GraphNode, TaggedCnt, HIGH_TAG_WIDTH};
 
 const EPOCH_WIDTH: u32 = HIGH_TAG_WIDTH;
 const EPOCH_MASK_HEIGHT: u32 = u64::BITS - EPOCH_WIDTH;
@@ -176,18 +175,6 @@ impl<T> Clone for AcquiredEBR<T> {
 
 impl<T> Copy for AcquiredEBR<T> {}
 
-pub struct WeakGuardEBR<T>(TaggedCnt<T>);
-
-impl<T> Validatable<T> for WeakGuardEBR<T> {
-    fn validate(&self) -> bool {
-        true
-    }
-
-    fn ptr(&self) -> TaggedCnt<T> {
-        self.0
-    }
-}
-
 pub struct CsEBR {
     guard: Option<UnsafeCell<Guard>>,
 }
@@ -215,7 +202,6 @@ impl From<Guard> for CsEBR {
 
 impl Cs for CsEBR {
     type RawShield<T> = AcquiredEBR<T>;
-    type WeakGuard<T> = WeakGuardEBR<T>;
 
     #[inline(always)]
     fn new() -> Self {

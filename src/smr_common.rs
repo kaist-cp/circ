@@ -21,11 +21,6 @@ pub trait Acquired<T> {
     unsafe fn copy_to(&self, other: &mut Self);
 }
 
-pub trait Validatable<T> {
-    fn validate(&self) -> bool;
-    fn ptr(&self) -> TaggedCnt<T>;
-}
-
 /// A SMR-specific critical section manager trait.
 ///
 /// We construct this `Cs` right before starting an operation,
@@ -35,7 +30,6 @@ pub trait Cs {
     ///
     /// For more information, read a comment on `Acquired<T>`.
     type RawShield<T>: Acquired<T>;
-    type WeakGuard<T>: Validatable<T>;
 
     fn new() -> Self;
     unsafe fn unprotected() -> Self;

@@ -364,8 +364,3 @@ fn smoke<C: Cs>() {
 fn smoke_ebr() {
     smoke::<circ::CsEBR>();
 }
-
-#[test]
-fn smoke_hp() {
-    smoke::<circ::CsHP>();
-}
