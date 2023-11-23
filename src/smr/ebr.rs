@@ -340,11 +340,7 @@ impl From<Guard> for CsEBR {
 unsafe fn dispose<T: GraphNode>(inner: *mut RcInner<T>) {
     DISPOSE_COUNTER.with(|counter| {
         let cs = &CsEBR::new();
-        if T::UNIQUE_OUTDEGREE {
-            dispose_list(inner, counter, cs);
-        } else {
-            dispose_general_node(inner, 0, counter, cs);
-        }
+        dispose_general_node(inner, 0, counter, cs);
     });
 }
 
@@ -433,77 +429,6 @@ unsafe fn dispose_general_node<T: GraphNode>(
     } else {
         // It is likely to be unsafe to reclaim right now.
         cs.defer(rc, |rc| CsEBR::try_destruct(rc));
-    }
-}
-
-#[inline]
-unsafe fn dispose_list<T: GraphNode>(root: *mut RcInner<T>, counter: &Cell<usize>, cs: &CsEBR) {
-    let mut ptr = Some(root);
-    let mut curr_epoch = default_collector().global_epoch().value();
-    let mut modu: Modular<EPOCH_WIDTH> = Modular::new(curr_epoch as isize + 1);
-
-    while let Some(rc) = ptr.take().and_then(|ptr| ptr.as_mut()) {
-        let count = counter.get();
-        counter.set(count + 1);
-        if count % 512 == 0 {
-            if let Some(local) = cs.guard().and_then(|guard| guard.local.as_ref()) {
-                local.repin_without_collect();
-            }
-            curr_epoch = default_collector().global_epoch().value();
-            modu = Modular::new(curr_epoch as isize + 1);
-        }
-        let state = State::from_raw(rc.state.load(Ordering::SeqCst));
-        let node_epoch = state.epoch();
-        debug_assert_eq!(state.strong(), 0);
-
-        // Note that checking whether it is a root is necessary, because if `node_epoch` is
-        // old enough, `modu.le` may return false.
-        if root == rc || modu.le(node_epoch as _, curr_epoch as isize - 3) {
-            // The current node is immediately reclaimable.
-            let next = rc.data_mut().pop_unique();
-            unsafe {
-                ManuallyDrop::drop(&mut rc.storage);
-                if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
-                    CsEBR::decrement_weak(rc, Some(cs));
-                } else {
-                    drop(CsEBR::own_object(rc));
-                }
-            }
-            if !next.is_null() {
-                let next_ptr = next.into_raw();
-                let next_ref = next_ptr.deref();
-                let link_epoch = next_ptr.high_tag() as u32;
-
-                // Decrement next node's strong count and update its epoch.
-                let next_cnt = loop {
-                    let cnt_curr = State::from_raw(next_ref.state.load(Ordering::SeqCst));
-                    let next_epoch =
-                        modu.max(&[node_epoch as _, link_epoch as _, cnt_curr.epoch() as _]);
-                    let cnt_next = cnt_curr.sub_strong(1).with_epoch(next_epoch as _);
-
-                    if next_ref
-                        .state
-                        .compare_exchange(
-                            cnt_curr.inner,
-                            cnt_next.inner,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        )
-                        .is_ok()
-                    {
-                        break cnt_next;
-                    }
-                };
-
-                // If the reference count hit zero, try dispose it.
-                if next_cnt.strong() == 0 {
-                    ptr = Some(next_ptr.as_raw());
-                }
-            }
-        } else {
-            // It is likely to be unsafe to reclaim right now.
-            cs.defer(rc, |rc| CsEBR::try_destruct(rc));
-        }
     }
 }
 

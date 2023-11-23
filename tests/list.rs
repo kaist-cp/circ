@@ -21,20 +21,11 @@ struct Node<K, V> {
 }
 
 impl<K, V> GraphNode for Node<K, V> {
-    const UNIQUE_OUTDEGREE: bool = true;
-
     fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>)
     where
         Self: Sized,
     {
         result.push(self.next.swap(Rc::null(), Ordering::Relaxed));
-    }
-
-    fn pop_unique(&mut self) -> Rc<Self>
-    where
-        Self: Sized,
-    {
-        self.next.swap(Rc::null(), Ordering::Relaxed)
     }
 }
 

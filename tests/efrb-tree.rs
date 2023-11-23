@@ -90,21 +90,11 @@ pub struct Node<K, V> {
 }
 
 impl<K, V> GraphNode for Node<K, V> {
-    const UNIQUE_OUTDEGREE: bool = false;
-
     #[inline]
     fn pop_outgoings(&mut self, _: &mut Vec<Rc<Self>>)
     where
         Self: Sized,
     {
-    }
-
-    #[inline]
-    fn pop_unique(&mut self) -> Rc<Self>
-    where
-        Self: Sized,
-    {
-        unimplemented!()
     }
 }
 
@@ -117,21 +107,11 @@ pub struct Update<K, V> {
 }
 
 impl<K, V> GraphNode for Update<K, V> {
-    const UNIQUE_OUTDEGREE: bool = false;
-
     #[inline]
     fn pop_outgoings(&mut self, _: &mut Vec<Rc<Self>>)
     where
         Self: Sized,
     {
-    }
-
-    #[inline]
-    fn pop_unique(&mut self) -> Rc<Self>
-    where
-        Self: Sized,
-    {
-        unimplemented!()
     }
 }
 
