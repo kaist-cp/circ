@@ -48,10 +48,11 @@ impl<T> Queue<T> {
             head: CachePadded::new(RawAtomic::null()),
             tail: CachePadded::new(RawAtomic::null()),
         };
-        let sentinel = RawShared::from_owned(Node {
-            data: MaybeUninit::uninit(),
-            next: RawAtomic::null(),
-        });
+        let sentinel =
+            RawShared::from_owned(Node {
+                data: MaybeUninit::uninit(),
+                next: RawAtomic::null(),
+            });
         q.head.store(sentinel, Relaxed);
         q.tail.store(sentinel, Relaxed);
         q

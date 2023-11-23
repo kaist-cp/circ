@@ -248,26 +248,27 @@ impl<'g, T: 'g, C: IsElement<T>> Iterator for Iter<'g, T, C> {
                 debug_assert!(self.curr.tag() == 0);
 
                 // Try to unlink `curr` from the list, and get the new value of `self.pred`.
-                let succ = match self
-                    .pred
-                    .compare_exchange(self.curr, succ, Acquire, Acquire, self.guard)
-                {
-                    Ok(_) => {
-                        // We succeeded in unlinking `curr`, so we have to schedule
-                        // deallocation. Deferred drop is okay, because `list.delete()` can only be
-                        // called if `T: 'static`.
-                        unsafe {
-                            C::finalize(self.curr.deref(), self.guard);
-                        }
+                let succ =
+                    match self
+                        .pred
+                        .compare_exchange(self.curr, succ, Acquire, Acquire, self.guard)
+                    {
+                        Ok(_) => {
+                            // We succeeded in unlinking `curr`, so we have to schedule
+                            // deallocation. Deferred drop is okay, because `list.delete()` can only be
+                            // called if `T: 'static`.
+                            unsafe {
+                                C::finalize(self.curr.deref(), self.guard);
+                            }
 
-                        // `succ` is the new value of `self.pred`.
-                        succ
-                    }
-                    Err(curr) => {
-                        // `curr` is the current value of `self.pred`.
-                        curr
-                    }
-                };
+                            // `succ` is the new value of `self.pred`.
+                            succ
+                        }
+                        Err(curr) => {
+                            // `curr` is the current value of `self.pred`.
+                            curr
+                        }
+                    };
 
                 // If the predecessor node is already marked as deleted, we need to restart from
                 // `head`.

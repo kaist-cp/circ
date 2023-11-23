@@ -401,25 +401,26 @@ unsafe fn dispose_general_node<T: GraphNode>(
             let link_epoch = next_ptr.high_tag() as u32;
 
             // Decrement next node's strong count and update its epoch.
-            let next_cnt = loop {
-                let cnt_curr = State::from_raw(next_ref.state.load(Ordering::SeqCst));
-                let next_epoch =
-                    modu.max(&[node_epoch as _, link_epoch as _, cnt_curr.epoch() as _]);
-                let cnt_next = cnt_curr.sub_strong(1).with_epoch(next_epoch as _);
+            let next_cnt =
+                loop {
+                    let cnt_curr = State::from_raw(next_ref.state.load(Ordering::SeqCst));
+                    let next_epoch =
+                        modu.max(&[node_epoch as _, link_epoch as _, cnt_curr.epoch() as _]);
+                    let cnt_next = cnt_curr.sub_strong(1).with_epoch(next_epoch as _);
 
-                if next_ref
-                    .state
-                    .compare_exchange(
-                        cnt_curr.as_raw(),
-                        cnt_next.as_raw(),
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    )
-                    .is_ok()
-                {
-                    break cnt_next;
-                }
-            };
+                    if next_ref
+                        .state
+                        .compare_exchange(
+                            cnt_curr.as_raw(),
+                            cnt_next.as_raw(),
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok()
+                    {
+                        break cnt_next;
+                    }
+                };
 
             // If the reference count hit zero, try dispose it recursively.
             if next_cnt.strong() == 0 {

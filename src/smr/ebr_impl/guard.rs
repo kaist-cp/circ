@@ -266,8 +266,9 @@ pub unsafe fn unprotected() -> &'static Guard {
     // a `static`
     struct GuardWrapper(Guard);
     unsafe impl Sync for GuardWrapper {}
-    static UNPROTECTED: GuardWrapper = GuardWrapper(Guard {
-        local: core::ptr::null(),
-    });
+    static UNPROTECTED: GuardWrapper =
+        GuardWrapper(Guard {
+            local: core::ptr::null(),
+        });
     &UNPROTECTED.0
 }

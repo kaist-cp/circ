@@ -229,13 +229,14 @@ impl<K, V> Helper<K, V> {
 
         if !self.p.protect_weak(&op_ref.p, cs) {
             // Unflag to preserve lock-freedom.
-            let _ = gp_ref.update.compare_exchange_tag(
-                op.with_tag(UpdateTag::DFLAG.bits()),
-                UpdateTag::CLEAN.bits(),
-                Ordering::Release,
-                Ordering::Relaxed,
-                cs,
-            );
+            let _ =
+                gp_ref.update.compare_exchange_tag(
+                    op.with_tag(UpdateTag::DFLAG.bits()),
+                    UpdateTag::CLEAN.bits(),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                    cs,
+                );
             return false;
         }
 
@@ -525,11 +526,12 @@ where
     ) -> bool {
         let new_node = unsafe { new.deref() };
         let parent_node = unsafe { parent.deref() };
-        let node_to_cas = if new_node.key < parent_node.key {
-            &parent_node.left
-        } else {
-            &parent_node.right
-        };
+        let node_to_cas =
+            if new_node.key < parent_node.key {
+                &parent_node.left
+            } else {
+                &parent_node.right
+            };
         node_to_cas
             .compare_exchange(
                 old.as_ptr(),
