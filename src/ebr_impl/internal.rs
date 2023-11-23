@@ -49,7 +49,7 @@ use memoffset::offset_of;
 use super::collector::{Collector, LocalHandle};
 use super::deferred::Deferred;
 use super::epoch::{AtomicEpoch, Epoch};
-use super::guard::{unprotected, Guard};
+use super::guard::{unprotected, Cs};
 use super::sync::list::{Entry, IsElement, IterError, List};
 use super::sync::queue::Queue;
 
@@ -182,7 +182,7 @@ impl Global {
     }
 
     /// Pushes the bag into the global queue and replaces the bag with a new empty bag.
-    pub(crate) fn push_bag(&self, bag: &mut Bag, guard: &Guard) {
+    pub(crate) fn push_bag(&self, bag: &mut Bag, guard: &Cs) {
         GLOBAL_GARBAGE_COUNT.fetch_add(bag.0.len(), Ordering::AcqRel);
         let bag = mem::replace(bag, Bag::new());
 
@@ -200,7 +200,7 @@ impl Global {
     /// path. In other words, we want the compiler to optimize branching for the case when
     /// `collect()` is not called.
     #[cold]
-    pub(crate) fn collect(&self, guard: &Guard) {
+    pub(crate) fn collect(&self, guard: &Cs) {
         if let Some(local) = unsafe { guard.local.as_ref() } {
             local.manual_count.set(0);
             local.pin_count.set(0);
@@ -235,7 +235,7 @@ impl Global {
     ///
     /// `try_advance()` is annotated `#[cold]` because it is rarely called.
     #[cold]
-    pub(crate) fn try_advance(&self, guard: &Guard) -> Epoch {
+    pub(crate) fn try_advance(&self, guard: &Cs) -> Epoch {
         let global_epoch = self.epoch.load(Ordering::Relaxed);
         atomic::fence(Ordering::SeqCst);
 
@@ -350,7 +350,7 @@ impl Local {
                 collecting: Cell::new(false),
                 epoch: CachePadded::new(AtomicEpoch::new(Epoch::starting())),
             });
-            collector.global.locals.insert(local, unprotected());
+            collector.global.locals.insert(local, &unprotected());
             LocalHandle {
                 local: local.as_raw(),
             }
@@ -385,7 +385,7 @@ impl Local {
     /// # Safety
     ///
     /// It should be safe for another thread to execute the given function.
-    pub(crate) unsafe fn defer(&self, mut deferred: Deferred, guard: &Guard) {
+    pub(crate) unsafe fn defer(&self, mut deferred: Deferred, guard: &Cs) {
         let bag = self.bag.with_mut(|b| &mut *b);
 
         while let Err(d) = bag.try_push(deferred) {
@@ -396,12 +396,12 @@ impl Local {
         self.incr_advance(guard);
     }
 
-    pub(crate) fn flush(&self, guard: &Guard) {
+    pub(crate) fn flush(&self, guard: &Cs) {
         self.push_to_global(guard);
         self.schedule_collection();
     }
 
-    pub(crate) fn push_to_global(&self, guard: &Guard) {
+    pub(crate) fn push_to_global(&self, guard: &Cs) {
         let bag = self.bag.with_mut(|b| unsafe { &mut *b });
 
         if !bag.is_empty() {
@@ -416,7 +416,7 @@ impl Local {
         }
     }
 
-    pub(crate) fn incr_advance(&self, guard: &Guard) {
+    pub(crate) fn incr_advance(&self, guard: &Cs) {
         let advance_count = self.advance_count.get().wrapping_add(1);
         self.advance_count.set(advance_count);
 
@@ -427,8 +427,8 @@ impl Local {
 
     /// Pins the `Local`.
     #[inline]
-    pub(crate) fn pin(&self) -> Guard {
-        let guard = Guard { local: self };
+    pub(crate) fn pin(&self) -> Cs {
+        let guard = Cs { local: self };
 
         let guard_count = self.guard_count.get();
         self.guard_count.set(guard_count.checked_add(1).unwrap());
@@ -500,7 +500,7 @@ impl Local {
             while self.must_collect.get() {
                 self.must_collect.set(false);
                 debug_assert!(self.epoch.load(Ordering::Relaxed).is_pinned());
-                let guard = ManuallyDrop::new(Guard { local: self });
+                let guard = ManuallyDrop::new(Cs { local: self });
                 self.global().collect(&guard);
                 self.repin_without_collect();
             }
@@ -588,7 +588,7 @@ impl Local {
             let collector: Collector = ptr::read(self.collector.with(|c| &*(*c)));
 
             // Mark this node in the linked list as deleted.
-            self.entry.delete(unprotected());
+            self.entry.delete(&unprotected());
 
             // Finally, drop the reference to the global. Note that this might be the last reference
             // to the `Global`. If so, the global data will be destroyed and all deferred functions
@@ -597,7 +597,7 @@ impl Local {
         }
     }
 
-    pub(crate) fn incr_manual_collection(&self, guard: &Guard) {
+    pub(crate) fn incr_manual_collection(&self, guard: &Cs) {
         let manual_count = self.manual_count.get().wrapping_add(1);
         self.manual_count.set(manual_count);
 
@@ -624,7 +624,7 @@ impl IsElement<Local> for Local {
         &*local_ptr
     }
 
-    unsafe fn finalize(entry: &Entry, guard: &Guard) {
+    unsafe fn finalize(entry: &Entry, guard: &Cs) {
         guard.defer_destroy(RawShared::from(Self::element_of(entry) as *const Local));
     }
 }

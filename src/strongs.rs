@@ -1,14 +1,14 @@
 use std::{
     array,
     marker::PhantomData,
-    mem::{self, forget},
+    mem::{self, forget, replace},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 use atomic::Atomic;
 use static_assertions::const_assert;
 
-use crate::{AtomicWeak, CsEBR, Pointer, RcInner, Tagged, TaggedCnt, Weak};
+use crate::{global_epoch, AtomicWeak, Cs, Pointer, RcInner, Tagged, TaggedCnt, Weak};
 
 pub trait GraphNode {
     /// Returns `Rc`s in this node.
@@ -23,7 +23,7 @@ impl<T> Tagged<RcInner<T>> {
         if self.is_null() {
             self
         } else {
-            self.with_high_tag(CsEBR::timestamp().unwrap_or(0))
+            self.with_high_tag(global_epoch())
         }
     }
 }
@@ -80,14 +80,14 @@ impl<T: GraphNode> AtomicRc<T> {
     }
 
     #[inline]
-    pub fn load_ss(&self, cs: &CsEBR) -> Snapshot<T> {
+    pub fn load_ss(&self, cs: &Cs) -> Snapshot<T> {
         let mut result = Snapshot::new();
         result.load(self, cs);
         result
     }
 
     #[inline]
-    pub fn store<P: StrongPtr<T>>(&self, ptr: P, order: Ordering, cs: &CsEBR) {
+    pub fn store<P: StrongPtr<T>>(&self, ptr: P, order: Ordering, cs: &Cs) {
         let ptr = ptr.into_rc();
         let new_ptr = ptr.as_ptr();
         let old_ptr = self.link.swap(new_ptr.with_timestamp(), order);
@@ -96,7 +96,7 @@ impl<T: GraphNode> AtomicRc<T> {
         unsafe {
             // Did not use `Rc::drop`, to reuse the given `cs`.
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                CsEBR::decrement_strong(cnt, 1, Some(cs));
+                cnt.decrement_strong(1, Some(cs));
             }
         }
     }
@@ -121,7 +121,7 @@ impl<T: GraphNode> AtomicRc<T> {
         desired: Rc<T>,
         success: Ordering,
         failure: Ordering,
-        _: &CsEBR,
+        _: &Cs,
     ) -> Result<Rc<T>, CompareExchangeErrorRc<T, Rc<T>>> {
         let desired_ptr = desired.as_ptr().with_timestamp();
         loop {
@@ -158,7 +158,7 @@ impl<T: GraphNode> AtomicRc<T> {
         desired: Rc<T>,
         success: Ordering,
         failure: Ordering,
-        _: &CsEBR,
+        _: &Cs,
     ) -> Result<Rc<T>, CompareExchangeErrorRc<T, Rc<T>>> {
         match self.link.compare_exchange_weak(
             expected,
@@ -183,7 +183,7 @@ impl<T: GraphNode> AtomicRc<T> {
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
-        _: &CsEBR,
+        _: &Cs,
     ) -> Result<TaggedCnt<T>, CompareExchangeErrorRc<T, TaggedCnt<T>>>
     where
         P: StrongPtr<T>,
@@ -221,7 +221,7 @@ impl<T: GraphNode> AtomicRc<T> {
         current_snap: &mut Snapshot<T>,
         success: Ordering,
         failure: Ordering,
-        cs: &CsEBR,
+        cs: &Cs,
     ) -> Result<Rc<T>, CompareExchangeErrorRc<T, Rc<T>>> {
         loop {
             current_snap.load(self, cs);
@@ -245,20 +245,6 @@ impl<T: GraphNode> AtomicRc<T> {
     }
 
     #[inline]
-    pub unsafe fn into_inner(self) -> Option<T> {
-        let ptr = self.link.load(Ordering::Relaxed).as_raw();
-        forget(self);
-
-        if let Some(cnt) = ptr.as_mut() {
-            if CsEBR::strong_count(cnt) == 1 {
-                return Some(CsEBR::own_object(ptr).into_inner());
-            }
-            CsEBR::decrement_strong(cnt, 1, Some(&CsEBR::unprotected()));
-        }
-        return None;
-    }
-
-    #[inline]
     pub fn take(&mut self) -> Rc<T> {
         let ptr = self.link.load(Ordering::Relaxed);
         self.link.store(Tagged::null(), Ordering::Relaxed);
@@ -272,7 +258,7 @@ impl<T: GraphNode> Drop for AtomicRc<T> {
         unsafe {
             let ptr = self.link.load(Ordering::Relaxed);
             if let Some(cnt) = ptr.as_raw().as_mut() {
-                CsEBR::decrement_strong(cnt, 1, None);
+                cnt.decrement_strong(1, None);
             }
         }
     }
@@ -320,7 +306,7 @@ impl<T: GraphNode> Rc<T> {
 
     #[inline(always)]
     pub fn new(obj: T) -> Self {
-        let ptr = CsEBR::create_object(obj, 1);
+        let ptr = RcInner::alloc(obj, 1);
         Self {
             ptr: TaggedCnt::from(ptr),
             _marker: PhantomData,
@@ -329,7 +315,7 @@ impl<T: GraphNode> Rc<T> {
 
     #[inline(always)]
     pub fn new_many<const N: usize>(obj: T) -> [Self; N] {
-        let ptr = CsEBR::create_object(obj, N as _);
+        let ptr = RcInner::alloc(obj, N as _);
         [(); N].map(|_| Self {
             ptr: TaggedCnt::from(ptr),
             _marker: PhantomData,
@@ -338,7 +324,7 @@ impl<T: GraphNode> Rc<T> {
 
     #[inline(always)]
     pub fn new_many_iter(obj: T, count: usize) -> NewRcIter<T> {
-        let ptr = CsEBR::create_object(obj, count as _);
+        let ptr = RcInner::alloc(obj, count as _);
         NewRcIter {
             remain: count,
             ptr: TaggedCnt::from(ptr),
@@ -348,7 +334,7 @@ impl<T: GraphNode> Rc<T> {
     #[inline]
     pub fn weak_many<const N: usize>(&self) -> [Weak<T>; N] {
         if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            CsEBR::increment_weak(cnt, N as u32);
+            cnt.increment_weak(N as u32);
         }
         array::from_fn(|_| Weak::null())
     }
@@ -361,7 +347,7 @@ impl<T: GraphNode> Rc<T> {
         };
         unsafe {
             if let Some(cnt) = rc.ptr.as_raw().as_ref() {
-                CsEBR::increment_strong(cnt);
+                cnt.increment_strong();
             }
         }
         rc
@@ -387,31 +373,10 @@ impl<T: GraphNode> Rc<T> {
     }
 
     #[inline]
-    pub unsafe fn into_inner(self) -> Option<T> {
-        let ptr = self.ptr.as_raw();
-        forget(self);
-
-        if let Some(cnt) = ptr.as_mut() {
-            if CsEBR::strong_count(cnt) == 1 {
-                return Some(CsEBR::own_object(ptr).into_inner());
-            }
-            CsEBR::decrement_strong(cnt, 1, Some(&CsEBR::unprotected()));
-        }
-        return None;
-    }
-
-    #[inline]
-    pub unsafe fn into_inner_unchecked(self) -> T {
-        let ptr = self.ptr.as_raw();
-        forget(self);
-        CsEBR::own_object(ptr).into_inner()
-    }
-
-    #[inline]
-    pub fn finalize(self, cs: &CsEBR) {
+    pub fn finalize(self, cs: &Cs) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                CsEBR::decrement_strong(cnt, 1, Some(cs));
+                cnt.decrement_strong(1, Some(cs));
             }
         }
         forget(self);
@@ -421,7 +386,7 @@ impl<T: GraphNode> Rc<T> {
     pub fn downgrade(&self) -> Weak<T> {
         unsafe {
             if let Some(cnt) = self.as_ptr().as_raw().as_ref() {
-                CsEBR::increment_weak(cnt, 1);
+                cnt.increment_weak(1);
                 return Weak::from_raw(self.ptr);
             }
         }
@@ -441,7 +406,7 @@ impl<T: GraphNode> Drop for Rc<T> {
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                CsEBR::decrement_strong(cnt, 1, None);
+                cnt.decrement_strong(1, None);
             }
         }
     }
@@ -478,9 +443,13 @@ impl<T: GraphNode> Iterator for NewRcIter<T> {
 
 impl<T: GraphNode> NewRcIter<T> {
     #[inline]
-    pub fn halt(mut self, cs: &CsEBR) {
+    pub fn halt(mut self, cs: &Cs) {
         if self.remain > 0 {
-            unsafe { CsEBR::decrement_strong(self.ptr.deref_mut(), self.remain as _, Some(cs)) };
+            unsafe {
+                self.ptr
+                    .deref_mut()
+                    .decrement_strong(self.remain as _, Some(cs))
+            };
         }
         forget(self);
     }
@@ -490,7 +459,11 @@ impl<T: GraphNode> Drop for NewRcIter<T> {
     #[inline]
     fn drop(&mut self) {
         if self.remain > 0 {
-            unsafe { CsEBR::decrement_strong(self.ptr.deref_mut(), self.remain as _, None) };
+            unsafe {
+                self.ptr
+                    .deref_mut()
+                    .decrement_strong(self.remain as _, None)
+            };
         }
     }
 }
@@ -510,21 +483,22 @@ impl<T> Clone for Snapshot<T> {
 impl<T> Copy for Snapshot<T> {}
 
 impl<T: GraphNode> Snapshot<T> {
+    /// TODO: add ordering
     #[inline]
-    pub fn load(&mut self, from: &AtomicRc<T>, cs: &CsEBR) {
-        cs.acquire(|order| from.load(order), &mut self.acquired);
+    pub fn load(&mut self, from: &AtomicRc<T>, _: &Cs) {
+        self.acquired = from.load(Ordering::Acquire);
     }
 
     #[inline]
-    pub fn protect(&mut self, ptr: &Rc<T>, cs: &CsEBR) {
-        cs.reserve(ptr.as_ptr(), &mut self.acquired);
+    pub fn protect(&mut self, ptr: &Rc<T>, _: &Cs) {
+        self.acquired = ptr.as_ptr();
     }
 
     #[inline]
-    pub fn protect_weak(&mut self, ptr: &Weak<T>, cs: &CsEBR) -> bool {
-        cs.reserve(ptr.as_ptr(), &mut self.acquired);
+    pub fn protect_weak(&mut self, ptr: &Weak<T>, _: &Cs) -> bool {
+        self.acquired = ptr.as_ptr();
         if !self.acquired.is_null() {
-            if !CsEBR::non_zero(unsafe { self.acquired.deref() }) {
+            if !unsafe { self.acquired.deref() }.non_zero() {
                 self.acquired = Tagged::null();
                 return false;
             }
@@ -540,7 +514,7 @@ impl<T: GraphNode> Snapshot<T> {
         };
         unsafe {
             if let Some(cnt) = rc.ptr.as_raw().as_ref() {
-                CsEBR::increment_strong(cnt);
+                cnt.increment_strong();
             }
         }
         rc
@@ -575,14 +549,14 @@ impl<T> Snapshot<T> {
     }
 
     #[inline]
-    pub fn load_from_weak(&mut self, from: &AtomicWeak<T>, cs: &CsEBR) -> bool {
+    pub fn load_from_weak(&mut self, from: &AtomicWeak<T>, _: &Cs) -> bool {
         loop {
-            let ptr = cs.acquire(|order| from.load(order), &mut self.acquired);
+            self.acquired = from.load(Ordering::Acquire);
 
-            if ptr.is_null() || unsafe { CsEBR::non_zero(ptr.deref()) } {
+            if self.acquired.is_null() || unsafe { self.acquired.deref().non_zero() } {
                 return true;
             } else {
-                self.acquired = Tagged::null();
+                let ptr = replace(&mut self.acquired, Tagged::null());
                 if ptr == from.link.load(Ordering::Acquire) {
                     return false;
                 }
@@ -644,7 +618,7 @@ pub trait StrongPtr<T>: Pointer<T> {
             // prevent calling a destructor which decrements it.
             forget(self);
         } else if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            CsEBR::increment_strong(cnt);
+            cnt.increment_strong();
         }
         rc
     }

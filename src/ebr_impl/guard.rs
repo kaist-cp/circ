@@ -10,11 +10,11 @@ use super::internal::Local;
 use super::RawShared;
 
 /// A guard that keeps the current thread pinned.
-pub struct Guard {
+pub struct Cs {
     pub(crate) local: *const Local,
 }
 
-impl Guard {
+impl Cs {
     /// Stores a function so that it can be executed at some point after all currently pinned
     /// threads get unpinned.
     ///
@@ -230,7 +230,7 @@ impl Guard {
     }
 }
 
-impl Drop for Guard {
+impl Drop for Cs {
     #[inline]
     fn drop(&mut self) {
         if let Some(local) = unsafe { self.local.as_ref() } {
@@ -239,9 +239,9 @@ impl Drop for Guard {
     }
 }
 
-impl fmt::Debug for Guard {
+impl fmt::Debug for Cs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("Guard { .. }")
+        f.pad("Cs { .. }")
     }
 }
 
@@ -253,22 +253,13 @@ impl fmt::Debug for Guard {
 /// Note that calling [`defer`] with a dummy guard will not defer the function - it will just
 /// execute the function immediately.
 ///
-/// If necessary, it's possible to create more dummy guards by cloning: `unprotected().clone()`.
-///
 /// # Safety
 ///
 /// Loading and dereferencing data from an [`Atomic`] using this guard is safe only if the
 /// [`Atomic`] is not being concurrently modified by other threads.
 #[inline]
-pub unsafe fn unprotected() -> &'static Guard {
-    // An unprotected guard is just a `Guard` with its field `local` set to null.
-    // We make a newtype over `Guard` because `Guard` isn't `Sync`, so can't be directly stored in
-    // a `static`
-    struct GuardWrapper(Guard);
-    unsafe impl Sync for GuardWrapper {}
-    static UNPROTECTED: GuardWrapper =
-        GuardWrapper(Guard {
-            local: core::ptr::null(),
-        });
-    &UNPROTECTED.0
+pub unsafe fn unprotected() -> Cs {
+    Cs {
+        local: core::ptr::null(),
+    }
 }

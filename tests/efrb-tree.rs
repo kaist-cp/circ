@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use circ::{AtomicRc, CsEBR, GraphNode, Pointer, Rc, Snapshot, StrongPtr, Weak};
+use circ::{AtomicRc, Cs, GraphNode, Pointer, Rc, Snapshot, StrongPtr, Weak};
 use std::sync::atomic::Ordering;
 
 bitflags! {
@@ -157,7 +157,7 @@ pub struct Cursor<K, V> {
 }
 
 impl<K, V> Cursor<K, V> {
-    fn new(root: &AtomicRc<Node<K, V>>, cs: &CsEBR) -> Self {
+    fn new(root: &AtomicRc<Node<K, V>>, cs: &Cs) -> Self {
         let l = root.load_ss(cs);
         Self {
             gp: Snapshot::new(),
@@ -187,7 +187,7 @@ where
     ///     - either gp → left has contained p (if k < gp → key) or gp → right has contained p (if k ≥ gp → key)
     ///     - gp → update has contained gpupdate
     #[inline]
-    fn search(&mut self, key: &K, cs: &CsEBR) {
+    fn search(&mut self, key: &K, cs: &Cs) {
         loop {
             let l_node = unsafe { self.l.deref() };
             if l_node.is_leaf() {
@@ -218,7 +218,7 @@ impl<K, V> Helper<K, V> {
         }
     }
 
-    fn load_delete(&mut self, op: Snapshot<Update<K, V>>, cs: &CsEBR) -> bool {
+    fn load_delete(&mut self, op: Snapshot<Update<K, V>>, cs: &Cs) -> bool {
         let op_ref = unsafe { op.deref() };
 
         let gp_ref = if self.gp.protect_weak(&op_ref.gp, cs) {
@@ -266,7 +266,7 @@ where
     K: Ord + Clone,
     V: Clone,
 {
-    pub fn find(&self, key: &K, cs: &CsEBR) -> Option<Snapshot<Node<K, V>>> {
+    pub fn find(&self, key: &K, cs: &Cs) -> Option<Snapshot<Node<K, V>>> {
         let mut cursor = Cursor::new(&self.root, cs);
         cursor.search(key, cs);
         let l_node = cursor.l.as_ref().unwrap();
@@ -277,7 +277,7 @@ where
         }
     }
 
-    pub fn insert(&self, key: K, value: V, cs: &CsEBR) -> bool {
+    pub fn insert(&self, key: K, value: V, cs: &Cs) -> bool {
         loop {
             let mut cursor = Cursor::new(&self.root, cs);
             cursor.search(&key, cs);
@@ -332,17 +332,13 @@ where
                         self.help_insert(new_update_ss, cs);
                         return true;
                     }
-                    Err(e) => unsafe {
-                        let new_pupdate = e.desired.into_inner().unwrap();
-                        drop(new_pupdate.new_internal.into_inner().unwrap());
-                        self.help(helping, cs);
-                    },
+                    Err(_) => self.help(helping, cs),
                 }
             }
         }
     }
 
-    pub fn delete(&self, key: &K, cs: &CsEBR) -> Option<Snapshot<Node<K, V>>> {
+    pub fn delete(&self, key: &K, cs: &Cs) -> Option<Snapshot<Node<K, V>>> {
         loop {
             let mut cursor = Cursor::new(&self.root, cs);
             cursor.search(key, cs);
@@ -392,17 +388,14 @@ where
                             return Some(cursor.l);
                         }
                     }
-                    Err(e) => unsafe {
-                        drop(e.desired.into_inner().unwrap());
-                        self.help(helping, cs);
-                    },
+                    Err(_) => self.help(helping, cs),
                 }
             }
         }
     }
 
     #[inline]
-    fn help(&self, op: Snapshot<Update<K, V>>, cs: &CsEBR) {
+    fn help(&self, op: Snapshot<Update<K, V>>, cs: &Cs) {
         match UpdateTag::from_bits_truncate(op.tag()) {
             UpdateTag::IFLAG => self.help_insert(op, cs),
             UpdateTag::MARK => self.help_marked(op, cs),
@@ -413,7 +406,7 @@ where
         }
     }
 
-    fn help_delete(&self, op: Snapshot<Update<K, V>>, cs: &CsEBR) -> bool {
+    fn help_delete(&self, op: Snapshot<Update<K, V>>, cs: &Cs) -> bool {
         // Precondition: op points to a DInfo record (i.e., it is not ⊥)
         let mut helper = Helper::new();
         if !helper.load_delete(op, cs) {
@@ -458,7 +451,7 @@ where
         }
     }
 
-    fn help_marked(&self, op: Snapshot<Update<K, V>>, cs: &CsEBR) {
+    fn help_marked(&self, op: Snapshot<Update<K, V>>, cs: &Cs) {
         // Precondition: op points to a DInfo record (i.e., it is not ⊥)
         let mut helper = Helper::new();
         if !helper.load_delete(op, cs) {
@@ -489,7 +482,7 @@ where
         );
     }
 
-    fn help_insert(&self, op: Snapshot<Update<K, V>>, cs: &CsEBR) {
+    fn help_insert(&self, op: Snapshot<Update<K, V>>, cs: &Cs) {
         // Precondition: op points to a IInfo record (i.e., it is not ⊥)
         let op_ref = unsafe { op.deref() };
         let mut p = Snapshot::new();
@@ -522,7 +515,7 @@ where
         parent: Snapshot<Node<K, V>>,
         old: Snapshot<Node<K, V>>,
         new: Snapshot<Node<K, V>>,
-        cs: &CsEBR,
+        cs: &Cs,
     ) -> bool {
         let new_node = unsafe { new.deref() };
         let parent_node = unsafe { parent.deref() };
@@ -547,7 +540,7 @@ where
 #[test]
 fn smoke() {
     extern crate rand;
-    use circ::CsEBR;
+    use circ::pin;
     use crossbeam_utils::thread;
     use rand::prelude::*;
 
@@ -564,7 +557,7 @@ fn smoke() {
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
                 for i in keys {
-                    assert!(map.insert(i, i.to_string(), &CsEBR::new()));
+                    assert!(map.insert(i, i.to_string(), &pin()));
                 }
             });
         }
@@ -578,16 +571,17 @@ fn smoke() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let cs = &mut CsEBR::new();
+                let mut cs = pin();
                 for i in keys {
                     assert_eq!(
                         i.to_string(),
-                        *unsafe { map.delete(&i, cs).unwrap().deref() }
+                        *unsafe { map.delete(&i, &cs).unwrap().deref() }
                             .value
                             .as_ref()
                             .unwrap()
                     );
-                    cs.clear();
+                    drop(cs);
+                    cs = pin();
                 }
             });
         }
@@ -601,16 +595,17 @@ fn smoke() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let cs = &mut CsEBR::new();
+                let mut cs = pin();
                 for i in keys {
                     assert_eq!(
                         i.to_string(),
-                        *unsafe { map.find(&i, cs).unwrap().deref() }
+                        *unsafe { map.find(&i, &cs).unwrap().deref() }
                             .value
                             .as_ref()
                             .unwrap()
                     );
-                    cs.clear();
+                    drop(cs);
+                    cs = pin();
                 }
             });
         }

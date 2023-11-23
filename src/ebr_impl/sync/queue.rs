@@ -15,7 +15,7 @@ use crossbeam_utils::{Backoff, CachePadded};
 
 use crate::ebr_impl::{RawAtomic, RawShared};
 
-use super::super::{unprotected, Guard};
+use super::super::{unprotected, Cs};
 
 // The representation here is a singly-linked list, with a sentinel node at the front. In general
 // the `tail` pointer may lag behind the actual tail. Non-sentinel nodes are either all `Data` or
@@ -65,7 +65,7 @@ impl<T> Queue<T> {
         &self,
         onto: RawShared<'_, Node<T>>,
         new: RawShared<'_, Node<T>>,
-        guard: &Guard,
+        guard: &Cs,
     ) -> bool {
         // is `onto` the actual tail?
         let o = unsafe { onto.deref() };
@@ -93,7 +93,7 @@ impl<T> Queue<T> {
     }
 
     /// Adds `t` to the back of the queue, possibly waking up threads blocked on `pop`.
-    pub(crate) fn push(&self, t: T, guard: &Guard) {
+    pub(crate) fn push(&self, t: T, guard: &Cs) {
         let new = RawShared::from_owned(Node {
             data: MaybeUninit::new(t),
             next: RawAtomic::null(),
@@ -112,7 +112,7 @@ impl<T> Queue<T> {
 
     /// Attempts to pop a data node. `Ok(None)` if queue is empty; `Err(())` if lost race to pop.
     #[inline(always)]
-    fn pop_internal(&self, guard: &Guard) -> Result<Option<T>, ()> {
+    fn pop_internal(&self, guard: &Cs) -> Result<Option<T>, ()> {
         let head = self.head.load(Acquire, guard);
         let h = unsafe { head.deref() };
         let next = h.next.load(Acquire, guard);
@@ -141,7 +141,7 @@ impl<T> Queue<T> {
     /// Attempts to pop a data node, if the data satisfies the given condition. `Ok(None)` if queue
     /// is empty or the data does not satisfy the condition; `Err(())` if lost race to pop.
     #[inline(always)]
-    fn pop_if_internal<F>(&self, condition: F, guard: &Guard) -> Result<Option<T>, ()>
+    fn pop_if_internal<F>(&self, condition: F, guard: &Cs) -> Result<Option<T>, ()>
     where
         T: Sync,
         F: Fn(&T) -> bool,
@@ -173,7 +173,7 @@ impl<T> Queue<T> {
     /// Attempts to dequeue from the front.
     ///
     /// Returns `None` if the queue is observed to be empty.
-    pub(crate) fn try_pop(&self, guard: &Guard) -> Option<T> {
+    pub(crate) fn try_pop(&self, guard: &Cs) -> Option<T> {
         loop {
             if let Ok(head) = self.pop_internal(guard) {
                 return head;
@@ -185,7 +185,7 @@ impl<T> Queue<T> {
     ///
     /// Returns `None` if the queue is observed to be empty, or the head does not satisfy the given
     /// condition.
-    pub(crate) fn try_pop_if<F>(&self, condition: F, guard: &Guard) -> Option<T>
+    pub(crate) fn try_pop_if<F>(&self, condition: F, guard: &Cs) -> Option<T>
     where
         T: Sync,
         F: Fn(&T) -> bool,
@@ -200,15 +200,15 @@ impl<T> Queue<T> {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.head.load(Acquire, unsafe { unprotected() })
-            == self.tail.load(Acquire, unsafe { unprotected() })
+        self.head.load(Acquire, unsafe { &unprotected() })
+            == self.tail.load(Acquire, unsafe { &unprotected() })
     }
 }
 
 impl<T> Drop for Queue<T> {
     fn drop(&mut self) {
         unsafe {
-            let guard = unprotected();
+            let guard = &unprotected();
 
             while self.try_pop(guard).is_some() {}
 

@@ -95,11 +95,11 @@ mod primitive {
 
 pub use self::collector::{Collector, LocalHandle};
 pub use self::epoch::Epoch;
-pub use self::guard::{unprotected, Guard};
+pub use self::guard::{unprotected, Cs};
 pub use self::internal::set_bag_capacity;
 pub use self::pointers::*;
 
 mod default;
-pub use self::default::{default_collector, is_pinned, pin};
+pub use self::default::{default_collector, global_epoch, is_pinned, pin};
 
 pub use self::internal::GLOBAL_GARBAGE_COUNT;

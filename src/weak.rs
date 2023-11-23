@@ -6,7 +6,7 @@ use std::{
 use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
-use crate::{CsEBR, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
+use crate::{Cs, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -50,7 +50,7 @@ impl<T> AtomicWeak<T> {
     }
 
     #[inline]
-    pub fn load_ss(&self, cs: &CsEBR) -> Option<Snapshot<T>> {
+    pub fn load_ss(&self, cs: &Cs) -> Option<Snapshot<T>> {
         let mut result = Snapshot::new();
         if result.load_from_weak(self, cs) {
             Some(result)
@@ -60,13 +60,13 @@ impl<T> AtomicWeak<T> {
     }
 
     #[inline]
-    pub fn store(&self, ptr: Weak<T>, order: Ordering, cs: &CsEBR) {
+    pub fn store(&self, ptr: Weak<T>, order: Ordering, cs: &Cs) {
         let new_ptr = ptr.as_ptr();
         forget(ptr);
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                CsEBR::decrement_weak(cnt, Some(cs));
+                cnt.decrement_weak(Some(cs));
             }
         }
     }
@@ -81,7 +81,7 @@ impl<T> AtomicWeak<T> {
         desired: Weak<T>,
         success: Ordering,
         failure: Ordering,
-        _: &CsEBR,
+        _: &Cs,
     ) -> Result<Weak<T>, CompareExchangeErrorWeak<T, Weak<T>>> {
         match self
             .link
@@ -104,7 +104,7 @@ impl<T> AtomicWeak<T> {
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
-        _: &CsEBR,
+        _: &Cs,
     ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, TaggedCnt<T>>>
     where
         P: StrongPtr<T>,
@@ -120,7 +120,7 @@ impl<T> AtomicWeak<T> {
     }
 
     #[inline(always)]
-    pub fn fetch_or(&self, tag: usize, order: Ordering, _: &CsEBR) -> TaggedCnt<T> {
+    pub fn fetch_or(&self, tag: usize, order: Ordering, _: &Cs) -> TaggedCnt<T> {
         // HACK: The size and alignment of `Atomic<TaggedCnt<T>>` will be same with `AtomicUsize`.
         // The equality of the sizes is checked by `const_assert!`.
         let link = unsafe { &*(&self.link as *const _ as *const AtomicUsize) };
@@ -145,7 +145,7 @@ impl<T> Drop for AtomicWeak<T> {
         let ptr = self.link.load(Ordering::SeqCst);
         unsafe {
             if let Some(cnt) = ptr.as_raw().as_mut() {
-                CsEBR::decrement_weak(cnt, None);
+                cnt.decrement_weak(None);
             }
         }
     }
@@ -181,7 +181,7 @@ impl<T> Weak<T> {
         let weak = Self { ptr: self.ptr };
         unsafe {
             if let Some(cnt) = weak.ptr.as_raw().as_ref() {
-                CsEBR::increment_weak(cnt, 1);
+                cnt.increment_weak(1);
             }
         }
         weak
@@ -220,7 +220,7 @@ impl<T> Weak<T> {
     #[inline]
     pub(crate) fn increment_weak(&self) {
         if let Some(ptr) = unsafe { self.ptr.as_raw().as_ref() } {
-            CsEBR::increment_weak(ptr, 1);
+            ptr.increment_weak(1);
         }
     }
 }
@@ -230,7 +230,7 @@ impl<T> Drop for Weak<T> {
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                CsEBR::decrement_weak(cnt, None);
+                cnt.decrement_weak(None);
             }
         }
     }

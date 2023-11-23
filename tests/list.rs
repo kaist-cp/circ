@@ -1,5 +1,5 @@
 use atomic::Ordering;
-use circ::{AtomicRc, CsEBR, GraphNode, Pointer, Rc, Snapshot, StrongPtr, TaggedCnt};
+use circ::{AtomicRc, Cs, GraphNode, Pointer, Rc, Snapshot, StrongPtr, TaggedCnt};
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::mem::swap;
@@ -90,7 +90,7 @@ impl<K: Ord, V> Cursor<K, V> {
     }
 
     /// Initializes a cursor.
-    fn initialize(&mut self, head: &AtomicRc<Node<K, V>>, cs: &CsEBR) {
+    fn initialize(&mut self, head: &AtomicRc<Node<K, V>>, cs: &Cs) {
         self.prev.load(head, cs);
         self.curr.load(&unsafe { self.prev.deref() }.next, cs);
         self.prev_next = self.curr.as_ptr();
@@ -98,7 +98,7 @@ impl<K: Ord, V> Cursor<K, V> {
 
     /// Clean up a chain of logically removed nodes in each traversal.
     #[inline]
-    fn find_harris(&mut self, key: &K, cs: &CsEBR) -> Result<bool, ()> {
+    fn find_harris(&mut self, key: &K, cs: &Cs) -> Result<bool, ()> {
         // Finding phase
         // - cursor.curr: first untagged node w/ key >= search key (4)
         // - cursor.prev: the ref of .next in previous untagged node (1 -> 2)
@@ -152,7 +152,7 @@ impl<K: Ord, V> Cursor<K, V> {
 
     /// Inserts a value.
     #[inline]
-    pub fn insert(&mut self, node: Rc<Node<K, V>>, cs: &CsEBR) -> Result<(), Rc<Node<K, V>>> {
+    pub fn insert(&mut self, node: Rc<Node<K, V>>, cs: &Cs) -> Result<(), Rc<Node<K, V>>> {
         unsafe { node.deref() }
             .next
             .swap(self.curr.upgrade(), Ordering::Relaxed);
@@ -171,7 +171,7 @@ impl<K: Ord, V> Cursor<K, V> {
 
     /// removes the current node.
     #[inline]
-    pub fn remove(&mut self, cs: &CsEBR) -> Result<(), ()> {
+    pub fn remove(&mut self, cs: &Cs) -> Result<(), ()> {
         let curr_node = unsafe { self.curr.deref() };
 
         self.next.load(&curr_node.next, cs);
@@ -214,9 +214,9 @@ where
     }
 
     #[inline]
-    fn get<F>(&self, key: &K, find: F, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool
+    fn get<F>(&self, key: &K, find: F, cursor: &mut Cursor<K, V>, cs: &Cs) -> bool
     where
-        F: Fn(&mut Cursor<K, V>, &K, &CsEBR) -> Result<bool, ()>,
+        F: Fn(&mut Cursor<K, V>, &K, &Cs) -> Result<bool, ()>,
     {
         loop {
             cursor.initialize(&self.head, cs);
@@ -227,9 +227,9 @@ where
     }
 
     #[inline]
-    fn insert<F>(&self, key: K, value: V, find: F, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool
+    fn insert<F>(&self, key: K, value: V, find: F, cursor: &mut Cursor<K, V>, cs: &Cs) -> bool
     where
-        F: Fn(&mut Cursor<K, V>, &K, &CsEBR) -> Result<bool, ()>,
+        F: Fn(&mut Cursor<K, V>, &K, &Cs) -> Result<bool, ()>,
     {
         let mut node = Rc::new(Node::new(key, value));
         loop {
@@ -246,9 +246,9 @@ where
     }
 
     #[inline]
-    fn remove<F>(&self, key: &K, find: F, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool
+    fn remove<F>(&self, key: &K, find: F, cursor: &mut Cursor<K, V>, cs: &Cs) -> bool
     where
-        F: Fn(&mut Cursor<K, V>, &K, &CsEBR) -> Result<bool, ()>,
+        F: Fn(&mut Cursor<K, V>, &K, &Cs) -> Result<bool, ()>,
     {
         loop {
             let found = self.get(key, &find, cursor, cs);
@@ -264,17 +264,17 @@ where
     }
 
     /// Omitted
-    pub fn harris_get(&self, key: &K, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool {
+    pub fn harris_get(&self, key: &K, cursor: &mut Cursor<K, V>, cs: &Cs) -> bool {
         self.get(key, Cursor::find_harris, cursor, cs)
     }
 
     /// Omitted
-    pub fn harris_insert(&self, key: K, value: V, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool {
+    pub fn harris_insert(&self, key: K, value: V, cursor: &mut Cursor<K, V>, cs: &Cs) -> bool {
         self.insert(key, value, Cursor::find_harris, cursor, cs)
     }
 
     /// Omitted
-    pub fn harris_remove(&self, key: &K, cursor: &mut Cursor<K, V>, cs: &CsEBR) -> bool {
+    pub fn harris_remove(&self, key: &K, cursor: &mut Cursor<K, V>, cs: &Cs) -> bool {
         self.remove(key, Cursor::find_harris, cursor, cs)
     }
 }
@@ -282,6 +282,7 @@ where
 #[test]
 fn smoke() {
     extern crate rand;
+    use circ::pin;
     use crossbeam_utils::thread;
     use rand::prelude::*;
 
@@ -299,7 +300,7 @@ fn smoke() {
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
                 for i in keys {
-                    assert!(map.harris_insert(i, i.to_string(), cursor, &CsEBR::new()));
+                    assert!(map.harris_insert(i, i.to_string(), cursor, &pin()));
                 }
             });
         }
@@ -314,11 +315,12 @@ fn smoke() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let cs = &mut CsEBR::new();
+                let mut cs = pin();
                 for i in keys {
-                    assert!(map.harris_remove(&i, cursor, cs));
+                    assert!(map.harris_remove(&i, cursor, &cs));
                     assert_eq!(i.to_string(), unsafe { cursor.curr.deref() }.value);
-                    cs.clear();
+                    drop(cs);
+                    cs = pin();
                 }
             });
         }
@@ -333,11 +335,12 @@ fn smoke() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let cs = &mut CsEBR::new();
+                let mut cs = pin();
                 for i in keys {
-                    assert!(map.harris_get(&i, cursor, cs));
+                    assert!(map.harris_get(&i, cursor, &cs));
                     assert_eq!(i.to_string(), unsafe { cursor.curr.deref() }.value);
-                    cs.clear();
+                    drop(cs);
+                    cs = pin();
                 }
             });
         }

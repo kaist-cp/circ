@@ -5,7 +5,7 @@
 //! destructed on thread exit, which in turn unregisters the thread.
 
 use super::collector::{Collector, LocalHandle};
-use super::guard::Guard;
+use super::guard::Cs;
 use super::sync::once_lock::OnceLock;
 
 fn collector() -> &'static Collector {
@@ -21,7 +21,7 @@ thread_local! {
 
 /// Pins the current thread.
 #[inline]
-pub fn pin() -> Guard {
+pub fn pin() -> Cs {
     with_handle(|handle| handle.pin())
 }
 
@@ -44,6 +44,11 @@ where
     HANDLE
         .try_with(|h| f(h))
         .unwrap_or_else(|_| f(&collector().register()))
+}
+
+#[inline]
+pub fn global_epoch() -> usize {
+    default_collector().global_epoch().value()
 }
 
 #[cfg(all(test, not(crossbeam_loom)))]
