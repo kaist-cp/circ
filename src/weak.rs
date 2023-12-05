@@ -45,17 +45,20 @@ impl<T> AtomicWeak<T> {
     /// neither a SMR nor a reference count. To dereference, use `load_from_weak` method of
     /// [`Snapshot`] instead.
     #[inline]
-    pub fn load(&self, order: Ordering) -> TaggedCnt<T> {
+    pub fn load_raw(&self, order: Ordering) -> TaggedCnt<T> {
         self.link.load(order)
     }
 
     #[inline]
-    pub fn load_ss(&self, cs: &Cs) -> Option<Snapshot<T>> {
-        let mut result = Snapshot::new();
-        if result.load_from_weak(self, cs) {
-            Some(result)
-        } else {
-            None
+    pub fn load<'g>(&self, cs: &'g Cs) -> Option<Snapshot<'g, T>> {
+        loop {
+            let acquired = self.load_raw(Ordering::Acquire);
+
+            if acquired.is_null() || unsafe { acquired.deref().non_zero() } {
+                return Some(Snapshot::from_raw(acquired, cs));
+            } else if acquired == self.load_raw(Ordering::Acquire) {
+                return None;
+            }
         }
     }
 
@@ -77,7 +80,7 @@ impl<T> AtomicWeak<T> {
     #[inline(always)]
     pub fn compare_exchange(
         &self,
-        expected: TaggedCnt<T>,
+        expected: impl StrongPtr<T>,
         desired: Weak<T>,
         success: Ordering,
         failure: Ordering,
@@ -85,12 +88,12 @@ impl<T> AtomicWeak<T> {
     ) -> Result<Weak<T>, CompareExchangeErrorWeak<T, Weak<T>>> {
         match self
             .link
-            .compare_exchange(expected, desired.as_ptr(), success, failure)
+            .compare_exchange(expected.as_ptr(), desired.as_ptr(), success, failure)
         {
             Ok(_) => {
                 // Skip decrementing a strong count of the inserted pointer.
                 forget(desired);
-                let weak = Weak::from_raw(expected);
+                let weak = Weak::from_raw(expected.as_ptr());
                 return Ok(weak);
             }
             Err(current) => Err(CompareExchangeErrorWeak { desired, current }),
@@ -98,17 +101,14 @@ impl<T> AtomicWeak<T> {
     }
 
     #[inline]
-    pub fn compare_exchange_tag<P>(
+    pub fn compare_exchange_tag(
         &self,
-        expected: &P,
+        expected: impl StrongPtr<T>,
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
         _: &Cs,
-    ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, TaggedCnt<T>>>
-    where
-        P: StrongPtr<T>,
-    {
+    ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, TaggedCnt<T>>> {
         let desired = expected.as_ptr().with_tag(desired_tag);
         match self
             .link
@@ -120,7 +120,7 @@ impl<T> AtomicWeak<T> {
     }
 
     #[inline(always)]
-    pub fn fetch_or(&self, tag: usize, order: Ordering, _: &Cs) -> TaggedCnt<T> {
+    pub fn fetch_or(&self, tag: usize, order: Ordering) -> TaggedCnt<T> {
         // HACK: The size and alignment of `Atomic<TaggedCnt<T>>` will be same with `AtomicUsize`.
         // The equality of the sizes is checked by `const_assert!`.
         let link = unsafe { &*(&self.link as *const _ as *const AtomicUsize) };
@@ -207,6 +207,17 @@ impl<T> Weak<T> {
     pub fn with_tag(mut self, tag: usize) -> Self {
         self.ptr = self.ptr.with_tag(tag);
         self
+    }
+
+    #[inline]
+    pub fn as_snapshot<'g>(&self, cs: &'g Cs) -> Option<Snapshot<'g, T>> {
+        let acquired = self.as_ptr();
+        if !acquired.is_null() {
+            if !unsafe { acquired.deref() }.non_zero() {
+                return None;
+            }
+        }
+        Some(Snapshot::from_raw(acquired, cs))
     }
 
     #[inline]

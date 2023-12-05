@@ -1,14 +1,14 @@
 use std::{
     array,
     marker::PhantomData,
-    mem::{self, forget, replace},
+    mem::{self, forget},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 use atomic::Atomic;
 use static_assertions::const_assert;
 
-use crate::{global_epoch, AtomicWeak, Cs, Pointer, RcInner, Tagged, TaggedCnt, Weak};
+use crate::{global_epoch, Cs, Pointer, RcInner, Tagged, TaggedCnt, Weak};
 
 pub trait GraphNode {
     /// Returns `Rc`s in this node.
@@ -31,11 +31,11 @@ impl<T> Tagged<RcInner<T>> {
 /// A result of unsuccessful `compare_exchange`.
 ///
 /// It returns the ownership of [`Rc`] pointer which was given as a parameter.
-pub struct CompareExchangeErrorRc<T, P> {
+pub struct CompareExchangeErrorRc<'g, T, P> {
     /// The `desired` which was given as a parameter of `compare_exchange`.
     pub desired: P,
     /// The current pointer value inside the atomic pointer.
-    pub current: TaggedCnt<T>,
+    pub current: Snapshot<'g, T>,
 }
 
 pub struct AtomicRc<T: GraphNode> {
@@ -75,19 +75,17 @@ impl<T: GraphNode> AtomicRc<T> {
     /// neither a SMR nor a reference count. To dereference, use `load` method of [`Snapshot`]
     /// instead.
     #[inline]
-    pub fn load(&self, order: Ordering) -> TaggedCnt<T> {
+    pub fn load_raw(&self, order: Ordering) -> TaggedCnt<T> {
         self.link.load(order)
     }
 
     #[inline]
-    pub fn load_ss(&self, cs: &Cs) -> Snapshot<T> {
-        let mut result = Snapshot::new();
-        result.load(self, cs);
-        result
+    pub fn load<'g>(&self, order: Ordering, cs: &'g Cs) -> Snapshot<'g, T> {
+        Snapshot::from_raw(self.load_raw(order), cs)
     }
 
     #[inline]
-    pub fn store<P: StrongPtr<T>>(&self, ptr: P, order: Ordering, cs: &Cs) {
+    pub fn store(&self, ptr: impl StrongPtr<T>, order: Ordering, cs: &Cs) {
         let ptr = ptr.into_rc();
         let new_ptr = ptr.as_ptr();
         let old_ptr = self.link.swap(new_ptr.with_timestamp(), order);
@@ -102,8 +100,6 @@ impl<T: GraphNode> AtomicRc<T> {
     }
 
     /// Swaps the currently stored shared pointer with the given shared pointer.
-    /// This operation is thread-safe.
-    /// (It is equivalent to `exchange` from the original implementation.)
     #[inline(always)]
     pub fn swap(&self, new: Rc<T>, order: Ordering) -> Rc<T> {
         let new_ptr = new.into_raw();
@@ -114,31 +110,35 @@ impl<T: GraphNode> AtomicRc<T> {
     /// Atomically compares the underlying pointer with expected, and if they refer to
     /// the same managed object, replaces the current pointer with a copy of desired
     /// (incrementing its reference count) and returns true. Otherwise, returns false.
+    /// TODO: rename desired/expected to more Rust-like names.
+    /// TODO: should resurrect `current`? Think about this.
     #[inline(always)]
-    pub fn compare_exchange(
+    pub fn compare_exchange<'g>(
         &self,
-        mut expected: TaggedCnt<T>,
+        expected: impl StrongPtr<T>,
         desired: Rc<T>,
         success: Ordering,
         failure: Ordering,
-        _: &Cs,
-    ) -> Result<Rc<T>, CompareExchangeErrorRc<T, Rc<T>>> {
+        cs: &'g Cs,
+    ) -> Result<Rc<T>, CompareExchangeErrorRc<'g, T, Rc<T>>> {
+        let mut expected_ptr = expected.as_ptr();
         let desired_ptr = desired.as_ptr().with_timestamp();
         loop {
             match self
                 .link
-                .compare_exchange(expected, desired_ptr, success, failure)
+                .compare_exchange(expected_ptr, desired_ptr, success, failure)
             {
                 Ok(_) => {
                     // Skip decrementing a strong count of the inserted pointer.
                     forget(desired);
-                    let rc = Rc::from_raw(expected);
+                    let rc = Rc::from_raw(expected_ptr);
                     return Ok(rc);
                 }
                 Err(current) => {
-                    if current.with_high_tag(0) == expected.with_high_tag(0) {
-                        expected = current;
+                    if current.with_high_tag(0) == expected_ptr.with_high_tag(0) {
+                        expected_ptr = current;
                     } else {
+                        let current = Snapshot::from_raw(current, cs);
                         return Err(CompareExchangeErrorRc { desired, current });
                     }
                 }
@@ -152,42 +152,48 @@ impl<T: GraphNode> AtomicRc<T> {
     ///
     /// This function is allowed to spuriously fail even when the comparison succeeds.
     #[inline(always)]
-    pub fn compare_exchange_weak(
+    pub fn compare_exchange_weak<'g>(
         &self,
-        expected: TaggedCnt<T>,
+        expected: impl StrongPtr<T>,
         desired: Rc<T>,
         success: Ordering,
         failure: Ordering,
-        _: &Cs,
-    ) -> Result<Rc<T>, CompareExchangeErrorRc<T, Rc<T>>> {
-        match self.link.compare_exchange_weak(
-            expected,
-            desired.as_ptr().with_timestamp(),
-            success,
-            failure,
-        ) {
-            Ok(_) => {
-                // Skip decrementing a strong count of the inserted pointer.
-                forget(desired);
-                let rc = Rc::from_raw(expected);
-                Ok(rc)
+        cs: &'g Cs,
+    ) -> Result<Rc<T>, CompareExchangeErrorRc<'g, T, Rc<T>>> {
+        let mut expected_ptr = expected.as_ptr();
+        let desired_ptr = desired.as_ptr().with_timestamp();
+        loop {
+            match self
+                .link
+                .compare_exchange_weak(expected_ptr, desired_ptr, success, failure)
+            {
+                Ok(_) => {
+                    // Skip decrementing a strong count of the inserted pointer.
+                    forget(desired);
+                    let rc = Rc::from_raw(expected_ptr);
+                    return Ok(rc);
+                }
+                Err(current) => {
+                    if current.with_high_tag(0) == expected_ptr.with_high_tag(0) {
+                        expected_ptr = current;
+                    } else {
+                        let current = Snapshot::from_raw(current, cs);
+                        return Err(CompareExchangeErrorRc { desired, current });
+                    }
+                }
             }
-            Err(current) => Err(CompareExchangeErrorRc { desired, current }),
         }
     }
 
     #[inline]
-    pub fn compare_exchange_tag<P>(
+    pub fn compare_exchange_tag<'g>(
         &self,
-        expected: P,
+        expected: impl StrongPtr<T>,
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
-        _: &Cs,
-    ) -> Result<TaggedCnt<T>, CompareExchangeErrorRc<T, TaggedCnt<T>>>
-    where
-        P: StrongPtr<T>,
-    {
+        cs: &'g Cs,
+    ) -> Result<TaggedCnt<T>, CompareExchangeErrorRc<'g, T, TaggedCnt<T>>> {
         let mut expected = expected.as_ptr();
         let desired = expected.with_tag(desired_tag).with_timestamp();
         loop {
@@ -200,44 +206,8 @@ impl<T: GraphNode> AtomicRc<T> {
                     if current.with_high_tag(0) == expected.with_high_tag(0) {
                         expected = current;
                     } else {
+                        let current = Snapshot::from_raw(current, cs);
                         return Err(CompareExchangeErrorRc { desired, current });
-                    }
-                }
-            }
-        }
-    }
-
-    /// Atomically compares the underlying pointer with expected, and if they refer to
-    /// the same managed object, replaces the current pointer with a copy of desired
-    /// (incrementing its reference count) and returns true. Otherwise, returns false.
-    ///
-    /// It is guaranteed that the current pointer on a failure is protected by `current_snap`.
-    /// It is lock-free but not wait-free. Use `compare_exchange` for an wait-free implementation.
-    #[inline(always)]
-    pub fn compare_exchange_protecting_current(
-        &self,
-        expected: TaggedCnt<T>,
-        mut desired: Rc<T>,
-        current_snap: &mut Snapshot<T>,
-        success: Ordering,
-        failure: Ordering,
-        cs: &Cs,
-    ) -> Result<Rc<T>, CompareExchangeErrorRc<T, Rc<T>>> {
-        loop {
-            current_snap.load(self, cs);
-            if current_snap.as_ptr() != expected {
-                return Err(CompareExchangeErrorRc {
-                    desired,
-                    current: current_snap.as_ptr(),
-                });
-            }
-            match self.compare_exchange(expected, desired, success, failure, cs) {
-                Ok(rc) => return Ok(rc),
-                Err(e) => {
-                    if e.current == current_snap.as_ptr() {
-                        return Err(e);
-                    } else {
-                        desired = e.desired
                     }
                 }
             }
@@ -392,6 +362,39 @@ impl<T: GraphNode> Rc<T> {
         }
         Weak::null()
     }
+
+    #[inline]
+    pub fn as_snapshot<'g>(&self, cs: &'g Cs) -> Snapshot<'g, T> {
+        Snapshot::from_raw(self.ptr, cs)
+    }
+
+    #[inline]
+    pub unsafe fn deref(&self) -> &T {
+        self.as_ptr().deref().data()
+    }
+
+    #[inline]
+    pub unsafe fn deref_mut(&mut self) -> &mut T {
+        self.as_ptr().deref_mut().data_mut()
+    }
+
+    #[inline]
+    pub fn as_ref(&self) -> Option<&T> {
+        if self.as_ptr().is_null() {
+            None
+        } else {
+            Some(unsafe { self.deref() })
+        }
+    }
+
+    #[inline]
+    pub unsafe fn as_mut(&mut self) -> Option<&mut T> {
+        if self.as_ptr().is_null() {
+            None
+        } else {
+            Some(unsafe { self.deref_mut() })
+        }
+    }
 }
 
 impl<T: GraphNode> Default for Rc<T> {
@@ -468,44 +471,23 @@ impl<T: GraphNode> Drop for NewRcIter<T> {
     }
 }
 
-pub struct Snapshot<T> {
+pub struct Snapshot<'g, T> {
     acquired: TaggedCnt<T>,
+    _marker: PhantomData<&'g T>,
 }
 
-impl<T> Clone for Snapshot<T> {
+impl<'g, T> Clone for Snapshot<'g, T> {
     fn clone(&self) -> Self {
         Self {
             acquired: self.acquired.clone(),
+            _marker: PhantomData,
         }
     }
 }
 
-impl<T> Copy for Snapshot<T> {}
+impl<'g, T> Copy for Snapshot<'g, T> {}
 
-impl<T: GraphNode> Snapshot<T> {
-    /// TODO: add ordering
-    #[inline]
-    pub fn load(&mut self, from: &AtomicRc<T>, _: &Cs) {
-        self.acquired = from.load(Ordering::Acquire);
-    }
-
-    #[inline]
-    pub fn protect(&mut self, ptr: &Rc<T>, _: &Cs) {
-        self.acquired = ptr.as_ptr();
-    }
-
-    #[inline]
-    pub fn protect_weak(&mut self, ptr: &Weak<T>, _: &Cs) -> bool {
-        self.acquired = ptr.as_ptr();
-        if !self.acquired.is_null() {
-            if !unsafe { self.acquired.deref() }.non_zero() {
-                self.acquired = Tagged::null();
-                return false;
-            }
-        }
-        true
-    }
-
+impl<'g, T: GraphNode> Snapshot<'g, T> {
     #[inline]
     pub fn upgrade(self) -> Rc<T> {
         let rc = Rc {
@@ -533,46 +515,67 @@ impl<T: GraphNode> Snapshot<T> {
     }
 
     #[inline]
-    pub fn with_tag(self, tag: usize) -> Snapshot<T> {
-        Self {
-            acquired: self.acquired.with_tag(tag),
+    pub fn with_tag(self, tag: usize) -> Self {
+        let mut result = self.clone();
+        result.acquired = result.acquired.with_tag(tag);
+        result
+    }
+
+    #[inline]
+    pub unsafe fn deref(&self) -> &'g T {
+        self.as_ptr().deref().data()
+    }
+
+    #[inline]
+    pub unsafe fn deref_mut(&mut self) -> &'g mut T {
+        self.as_ptr().deref_mut().data_mut()
+    }
+
+    #[inline]
+    pub fn as_ref(&self) -> Option<&'g T> {
+        if self.as_ptr().is_null() {
+            None
+        } else {
+            Some(unsafe { self.deref() })
+        }
+    }
+
+    #[inline]
+    pub unsafe fn as_mut(&mut self) -> Option<&'g mut T> {
+        if self.as_ptr().is_null() {
+            None
+        } else {
+            Some(unsafe { self.deref_mut() })
         }
     }
 }
 
-impl<T> Snapshot<T> {
+impl<'g, T> Snapshot<'g, T> {
     #[inline(always)]
-    pub fn new() -> Self {
+    pub fn null() -> Self {
         Self {
             acquired: Tagged::null(),
+            _marker: PhantomData,
         }
     }
 
     #[inline]
-    pub fn load_from_weak(&mut self, from: &AtomicWeak<T>, _: &Cs) -> bool {
-        loop {
-            self.acquired = from.load(Ordering::Acquire);
-
-            if self.acquired.is_null() || unsafe { self.acquired.deref().non_zero() } {
-                return true;
-            } else {
-                let ptr = replace(&mut self.acquired, Tagged::null());
-                if ptr == from.link.load(Ordering::Acquire) {
-                    return false;
-                }
-            }
+    pub(crate) fn from_raw(acquired: TaggedCnt<T>, _: &'g Cs) -> Self {
+        Self {
+            acquired,
+            _marker: PhantomData,
         }
     }
 }
 
-impl<T: GraphNode> Default for Snapshot<T> {
+impl<'g, T: GraphNode> Default for Snapshot<'g, T> {
     #[inline]
     fn default() -> Self {
-        Self::new()
+        Self::null()
     }
 }
 
-impl<T> PartialEq for Snapshot<T> {
+impl<'g, T> PartialEq for Snapshot<'g, T> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.acquired.eq(&other.acquired)
@@ -586,14 +589,7 @@ impl<T: GraphNode> Pointer<T> for Rc<T> {
     }
 }
 
-impl<T> Pointer<T> for Snapshot<T> {
-    #[inline]
-    fn as_ptr(&self) -> TaggedCnt<T> {
-        self.acquired
-    }
-}
-
-impl<T> Pointer<T> for &Snapshot<T> {
+impl<'g, T> Pointer<T> for Snapshot<'g, T> {
     #[inline]
     fn as_ptr(&self) -> TaggedCnt<T> {
         self.acquired
@@ -622,44 +618,12 @@ pub trait StrongPtr<T>: Pointer<T> {
         }
         rc
     }
-
-    #[inline]
-    unsafe fn deref<'g>(&self) -> &'g T {
-        self.as_ptr().deref().data()
-    }
-
-    #[inline]
-    unsafe fn deref_mut<'g>(&mut self) -> &'g mut T {
-        self.as_ptr().deref_mut().data_mut()
-    }
-
-    #[inline]
-    fn as_ref(&self) -> Option<&T> {
-        if self.as_ptr().is_null() {
-            None
-        } else {
-            Some(unsafe { self.deref() })
-        }
-    }
-
-    #[inline]
-    fn as_mut(&mut self) -> Option<&mut T> {
-        if self.as_ptr().is_null() {
-            None
-        } else {
-            Some(unsafe { self.deref_mut() })
-        }
-    }
 }
 
 impl<T: GraphNode> StrongPtr<T> for Rc<T> {
     const OWNS_REF_COUNT: bool = true;
 }
 
-impl<T> StrongPtr<T> for Snapshot<T> {
-    const OWNS_REF_COUNT: bool = false;
-}
-
-impl<T> StrongPtr<T> for &Snapshot<T> {
+impl<'g, T> StrongPtr<T> for Snapshot<'g, T> {
     const OWNS_REF_COUNT: bool = false;
 }

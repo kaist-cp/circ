@@ -48,11 +48,10 @@ impl<T> Queue<T> {
             head: CachePadded::new(RawAtomic::null()),
             tail: CachePadded::new(RawAtomic::null()),
         };
-        let sentinel =
-            RawShared::from_owned(Node {
-                data: MaybeUninit::uninit(),
-                next: RawAtomic::null(),
-            });
+        let sentinel = RawShared::from_owned(Node {
+            data: MaybeUninit::uninit(),
+            next: RawAtomic::null(),
+        });
         q.head.store(sentinel, Relaxed);
         q.tail.store(sentinel, Relaxed);
         q
@@ -129,8 +128,7 @@ impl<T> Queue<T> {
                                 .compare_exchange(tail, next, Release, Relaxed, guard);
                         }
                         guard.defer_destroy(head);
-                        // TODO: Replace with MaybeUninit::read when api is stable
-                        Some(n.data.as_ptr().read())
+                        Some(n.data.assume_init_read())
                     })
                     .map_err(|_| ())
             },
@@ -162,7 +160,7 @@ impl<T> Queue<T> {
                                 .compare_exchange(tail, next, Release, Relaxed, guard);
                         }
                         guard.defer_destroy(head);
-                        Some(n.data.as_ptr().read())
+                        Some(n.data.assume_init_read())
                     })
                     .map_err(|_| ())
             },
