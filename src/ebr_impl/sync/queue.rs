@@ -196,11 +196,6 @@ impl<T> Queue<T> {
             backoff.spin();
         }
     }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.head.load(Acquire, unsafe { &unprotected() })
-            == self.tail.load(Acquire, unsafe { &unprotected() })
-    }
 }
 
 impl<T> Drop for Queue<T> {

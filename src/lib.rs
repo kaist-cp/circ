@@ -1,9 +1,9 @@
 mod ebr_impl;
-mod strongs;
+mod strong;
 mod utils;
 mod weak;
 
 pub use ebr_impl::*;
-pub use strongs::*;
+pub use strong::*;
 pub use utils::*;
 pub use weak::*;

@@ -271,11 +271,6 @@ impl Global {
         self.epoch.store(new_epoch, Ordering::Release);
         new_epoch
     }
-
-    /// Checks if the global queue is empty.
-    pub(crate) fn is_global_queue_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
 }
 
 /// Participant for garbage collection.

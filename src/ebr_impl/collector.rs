@@ -39,11 +39,6 @@ impl Collector {
     pub fn global_epoch(&self) -> Epoch {
         self.global.epoch.load(Ordering::Relaxed)
     }
-
-    /// Checks if the global queue is empty.
-    pub fn is_global_queue_empty(&self) -> bool {
-        self.global.is_global_queue_empty()
-    }
 }
 
 impl Clone for Collector {
