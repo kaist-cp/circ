@@ -56,12 +56,9 @@ use super::sync::queue::Queue;
 #[allow(missing_docs)]
 pub static GLOBAL_GARBAGE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+// TODO: Add a more strict constant for sanitizing.
 /// Maximum number of objects a bag can contain.
-#[cfg(not(any(crossbeam_sanitize, miri)))]
 static mut MAX_OBJECTS: usize = 64;
-// Makes it more likely to trigger any potential data races.
-#[cfg(any(crossbeam_sanitize, miri))]
-static mut MAX_OBJECTS: usize = 4;
 
 static mut MANUAL_EVENTS_BETWEEN_COLLECT: usize = 64;
 
@@ -617,7 +614,7 @@ impl IsElement<Local> for Local {
     }
 }
 
-#[cfg(all(test, not(crossbeam_loom)))]
+#[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 

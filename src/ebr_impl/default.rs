@@ -51,7 +51,7 @@ pub fn global_epoch() -> usize {
     default_collector().global_epoch().value()
 }
 
-#[cfg(all(test, not(crossbeam_loom)))]
+#[cfg(test)]
 mod tests {
     use crossbeam_utils::thread;
 

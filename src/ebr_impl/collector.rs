@@ -109,7 +109,7 @@ impl fmt::Debug for LocalHandle {
     }
 }
 
-#[cfg(all(test, not(crossbeam_loom)))]
+#[cfg(test)]
 mod tests {
     use std::mem::ManuallyDrop;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -249,6 +249,7 @@ mod tests {
         const COUNT: usize = 100_000;
         static DROPS: AtomicUsize = AtomicUsize::new(0);
 
+        #[allow(dead_code)]
         struct Elem(i32);
 
         impl Drop for Elem {
@@ -313,6 +314,7 @@ mod tests {
         const COUNT: usize = 700;
         static DROPS: AtomicUsize = AtomicUsize::new(0);
 
+        #[allow(dead_code)]
         struct Elem(i32);
 
         impl Drop for Elem {
@@ -390,6 +392,7 @@ mod tests {
         const COUNT: usize = 100_000;
         static DROPS: AtomicUsize = AtomicUsize::new(0);
 
+        #[allow(dead_code)]
         struct Elem(i32);
 
         impl Drop for Elem {

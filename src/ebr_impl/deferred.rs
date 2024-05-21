@@ -77,7 +77,7 @@ impl Deferred {
     }
 }
 
-#[cfg(all(test, not(crossbeam_loom)))]
+#[cfg(test)]
 mod tests {
     #![allow(clippy::drop_copy)]
 
