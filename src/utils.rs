@@ -58,7 +58,7 @@ const COUNT: u64 = 1;
 const WEAK_COUNT: u64 = 1 << STRONG_WIDTH;
 
 thread_local! {
-    static DISPOSE_COUNTER: Cell<usize> = Cell::new(0);
+    static DISPOSE_COUNTER: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Effectively wraps the presence of epoch and destruction bits.
@@ -140,7 +140,7 @@ impl<const WIDTH: u32> Modular<WIDTH> {
 
     // Receives a number from a modular space.
     fn inver(&self, val: isize) -> isize {
-        (val as isize + (self.max + 1)) % (1 << WIDTH)
+        (val + (self.max + 1)) % (1 << WIDTH)
     }
 
     pub fn max(&self, nums: &[isize]) -> isize {
@@ -198,7 +198,7 @@ impl<T> RcInner<T> {
             // Now create an actual reference.
             self.state.fetch_add(COUNT, Ordering::SeqCst);
         }
-        return true;
+        true
     }
 
     /// TODO: why mut?

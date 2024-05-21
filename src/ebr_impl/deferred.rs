@@ -79,7 +79,7 @@ impl Deferred {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::drop_copy)]
+    #![allow(dropping_copy_types)]
 
     use super::Deferred;
     use core::hint::black_box;

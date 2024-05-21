@@ -211,7 +211,7 @@ impl Global {
 
         for _ in 0..Self::COLLECTS_TRIALS {
             match self.queue.try_pop_if(
-                &|sealed_bag: &SealedBag| sealed_bag.is_expired(self.epoch.load(Ordering::Relaxed)),
+                |sealed_bag: &SealedBag| sealed_bag.is_expired(self.epoch.load(Ordering::Relaxed)),
                 guard,
             ) {
                 None => break,
@@ -406,7 +406,7 @@ impl Local {
         self.advance_count.set(advance_count);
 
         if advance_count % Self::COUNTS_BETWEEN_ADVANCE == 0 {
-            self.global().try_advance(&guard);
+            self.global().try_advance(guard);
         }
     }
 

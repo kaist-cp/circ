@@ -94,7 +94,7 @@ impl<T> AtomicWeak<T> {
                 // Skip decrementing a strong count of the inserted pointer.
                 forget(desired);
                 let weak = Weak::from_raw(expected.as_ptr());
-                return Ok(weak);
+                Ok(weak)
             }
             Err(current) => Err(CompareExchangeErrorWeak { desired, current }),
         }
@@ -212,10 +212,8 @@ impl<T> Weak<T> {
     #[inline]
     pub fn as_snapshot<'g>(&self, cs: &'g Cs) -> Option<Snapshot<'g, T>> {
         let acquired = self.as_ptr();
-        if !acquired.is_null() {
-            if !unsafe { acquired.deref() }.non_zero() {
-                return None;
-            }
+        if !acquired.is_null() && !unsafe { acquired.deref() }.non_zero() {
+            return None;
         }
         Some(Snapshot::from_raw(acquired, cs))
     }

@@ -479,7 +479,7 @@ pub struct Snapshot<'g, T> {
 impl<'g, T> Clone for Snapshot<'g, T> {
     fn clone(&self) -> Self {
         Self {
-            acquired: self.acquired.clone(),
+            acquired: self.acquired,
             _marker: PhantomData,
         }
     }
@@ -516,7 +516,7 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
 
     #[inline]
     pub fn with_tag(self, tag: usize) -> Self {
-        let mut result = self.clone();
+        let mut result = self;
         result.acquired = result.acquired.with_tag(tag);
         result
     }

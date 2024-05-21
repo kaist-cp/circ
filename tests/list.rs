@@ -228,9 +228,7 @@ where
     {
         loop {
             let (found, cursor) = self.get(key, &find, cs);
-            if found.is_none() {
-                return None;
-            }
+            found?;
 
             match cursor.remove(cs) {
                 Err(()) => continue,

@@ -158,7 +158,7 @@ impl<T> RawAtomic<T> {
         RawShared::from(self.inner.load(order))
     }
 
-    pub fn store<'g>(&self, val: RawShared<'g, T>, order: Ordering) {
+    pub fn store(&self, val: RawShared<'_, T>, order: Ordering) {
         self.inner.store(val.inner, order);
     }
 
@@ -172,8 +172,8 @@ impl<T> RawAtomic<T> {
     ) -> Result<RawShared<'g, T>, RawShared<'g, T>> {
         self.inner
             .compare_exchange(current.inner, new.inner, success, failure)
-            .map(|curr| RawShared::from(curr))
-            .map_err(|curr| RawShared::from(curr))
+            .map(RawShared::from)
+            .map_err(RawShared::from)
     }
 
     pub fn compare_exchange_weak<'g>(
@@ -186,8 +186,8 @@ impl<T> RawAtomic<T> {
     ) -> Result<RawShared<'g, T>, RawShared<'g, T>> {
         self.inner
             .compare_exchange_weak(current.inner, new.inner, success, failure)
-            .map(|curr| RawShared::from(curr))
-            .map_err(|curr| RawShared::from(curr))
+            .map(RawShared::from)
+            .map_err(RawShared::from)
     }
 
     pub fn fetch_or<'g>(&self, tag: usize, order: Ordering, _: &'g Cs) -> RawShared<'g, T> {
