@@ -125,7 +125,7 @@ impl Cs {
     /// it's called only after the grace period and `shared` is no longer shared with other
     /// threads. But we don't expect type systems to prove this.
     pub(crate) unsafe fn defer_destroy<T>(&self, ptr: RawShared<T>) {
-        self.defer_unchecked(move || unsafe { drop(ptr.into_owned()) });
+        self.defer_unchecked(move || unsafe { ptr.drop() });
     }
 
     /// Clears up the thread-local cache of deferred functions by executing them or moving into the

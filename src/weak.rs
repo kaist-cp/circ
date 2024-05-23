@@ -6,7 +6,7 @@ use std::{
 use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
-use crate::{Cs, Pointer, Snapshot, StrongPtr, Tagged, TaggedCnt};
+use crate::{Cs, Pointer, Snapshot, Tagged, TaggedCnt};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -80,7 +80,7 @@ impl<T> AtomicWeak<T> {
     #[inline(always)]
     pub fn compare_exchange(
         &self,
-        expected: impl StrongPtr<T>,
+        expected: impl Pointer<T>,
         desired: Weak<T>,
         success: Ordering,
         failure: Ordering,
@@ -91,7 +91,7 @@ impl<T> AtomicWeak<T> {
             .compare_exchange(expected.as_ptr(), desired.as_ptr(), success, failure)
         {
             Ok(_) => {
-                // Skip decrementing a strong count of the inserted pointer.
+                // Skip decrementing a weak count of the inserted pointer.
                 forget(desired);
                 let weak = Weak::from_raw(expected.as_ptr());
                 Ok(weak)
@@ -103,7 +103,7 @@ impl<T> AtomicWeak<T> {
     #[inline]
     pub fn compare_exchange_tag(
         &self,
-        expected: impl StrongPtr<T>,
+        expected: impl Pointer<T>,
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
@@ -165,6 +165,18 @@ pub struct Weak<T> {
 unsafe impl<T: Send + Sync> Send for Weak<T> {}
 unsafe impl<T: Send + Sync> Sync for Weak<T> {}
 
+impl<T> Clone for Weak<T> {
+    fn clone(&self) -> Self {
+        let weak = Self { ptr: self.ptr };
+        unsafe {
+            if let Some(cnt) = weak.ptr.as_raw().as_ref() {
+                cnt.increment_weak(1);
+            }
+        }
+        weak
+    }
+}
+
 impl<T> Weak<T> {
     #[inline(always)]
     pub fn null() -> Self {
@@ -174,17 +186,6 @@ impl<T> Weak<T> {
     #[inline(always)]
     pub(crate) fn from_raw(ptr: TaggedCnt<T>) -> Self {
         Self { ptr }
-    }
-
-    #[inline(always)]
-    pub fn clone(&self) -> Self {
-        let weak = Self { ptr: self.ptr };
-        unsafe {
-            if let Some(cnt) = weak.ptr.as_raw().as_ref() {
-                cnt.increment_weak(1);
-            }
-        }
-        weak
     }
 
     #[inline(always)]

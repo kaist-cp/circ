@@ -207,7 +207,7 @@ impl<T> Drop for Queue<T> {
 
             // Destroy the remaining sentinel node.
             let sentinel = self.head.load(Relaxed, guard);
-            drop(sentinel.into_owned());
+            sentinel.drop();
         }
     }
 }

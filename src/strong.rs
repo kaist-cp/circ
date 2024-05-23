@@ -260,6 +260,21 @@ pub struct Rc<T: GraphNode> {
 unsafe impl<T: GraphNode + Send + Sync> Send for Rc<T> {}
 unsafe impl<T: GraphNode + Send + Sync> Sync for Rc<T> {}
 
+impl<T: GraphNode> Clone for Rc<T> {
+    fn clone(&self) -> Self {
+        let rc = Self {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        };
+        unsafe {
+            if let Some(cnt) = rc.ptr.as_raw().as_ref() {
+                cnt.increment_strong();
+            }
+        }
+        rc
+    }
+}
+
 impl<T: GraphNode> Rc<T> {
     #[inline(always)]
     pub fn null() -> Self {
@@ -310,20 +325,6 @@ impl<T: GraphNode> Rc<T> {
     }
 
     #[inline(always)]
-    pub fn clone(&self) -> Self {
-        let rc = Self {
-            ptr: self.ptr,
-            _marker: PhantomData,
-        };
-        unsafe {
-            if let Some(cnt) = rc.ptr.as_raw().as_ref() {
-                cnt.increment_strong();
-            }
-        }
-        rc
-    }
-
-    #[inline(always)]
     pub fn tag(&self) -> usize {
         self.ptr.tag()
     }
@@ -368,11 +369,18 @@ impl<T: GraphNode> Rc<T> {
         Snapshot::from_raw(self.ptr, cs)
     }
 
+    /// # Safety
+    ///
+    /// The pointer must be a valid memory location to dereference.
     #[inline]
     pub unsafe fn deref(&self) -> &T {
         self.as_ptr().deref().data()
     }
 
+    /// # Safety
+    ///
+    /// The pointer must be a valid memory location to dereference and
+    /// other threads must not have references to the object.
     #[inline]
     pub unsafe fn deref_mut(&mut self) -> &mut T {
         self.as_ptr().deref_mut().data_mut()
@@ -387,6 +395,9 @@ impl<T: GraphNode> Rc<T> {
         }
     }
 
+    /// # Safety
+    ///
+    /// Other threads must not have references to the object.
     #[inline]
     pub unsafe fn as_mut(&mut self) -> Option<&mut T> {
         if self.as_ptr().is_null() {
@@ -478,10 +489,7 @@ pub struct Snapshot<'g, T> {
 
 impl<'g, T> Clone for Snapshot<'g, T> {
     fn clone(&self) -> Self {
-        Self {
-            acquired: self.acquired,
-            _marker: PhantomData,
-        }
+        *self
     }
 }
 
@@ -521,11 +529,18 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
         result
     }
 
+    /// # Safety
+    ///
+    /// The pointer must be a valid memory location to dereference.
     #[inline]
     pub unsafe fn deref(&self) -> &'g T {
         self.as_ptr().deref().data()
     }
 
+    /// # Safety
+    ///
+    /// The pointer must be a valid memory location to dereference and
+    /// other threads must not have references to the object.
     #[inline]
     pub unsafe fn deref_mut(&mut self) -> &'g mut T {
         self.as_ptr().deref_mut().data_mut()
@@ -540,6 +555,9 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
         }
     }
 
+    /// # Safety
+    ///
+    /// Other threads must not have references to the object.
     #[inline]
     pub unsafe fn as_mut(&mut self) -> Option<&'g mut T> {
         if self.as_ptr().is_null() {

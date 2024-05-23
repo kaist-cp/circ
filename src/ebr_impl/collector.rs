@@ -16,6 +16,8 @@ unsafe impl Send for Collector {}
 unsafe impl Sync for Collector {}
 
 impl Default for Collector {
+    // https://github.com/rust-lang/rust-clippy/issues/11382
+    #[allow(clippy::arc_with_non_send_sync)]
     fn default() -> Self {
         Self {
             global: Arc::new(Global::new()),
@@ -216,7 +218,7 @@ mod tests {
             for _ in 0..COUNT {
                 let a = RawShared::from_owned(7);
                 guard.defer_unchecked(move || {
-                    a.into_owned();
+                    a.drop();
                     DESTROYS.fetch_add(1, Ordering::Relaxed);
                 });
             }
@@ -290,7 +292,7 @@ mod tests {
             for _ in 0..COUNT {
                 let a = RawShared::from_owned(7);
                 guard.defer_unchecked(move || {
-                    a.into_owned();
+                    a.drop();
                     DESTROYS.fetch_add(1, Ordering::Relaxed);
                 });
             }

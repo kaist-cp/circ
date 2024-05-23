@@ -171,6 +171,13 @@ impl<T> RcInner<T> {
         Box::into_raw(Box::new(obj))
     }
 
+    /// # Safety
+    ///
+    /// The given `ptr` must not be shared across more than one thread.
+    pub(crate) unsafe fn dealloc(ptr: *mut Self) {
+        drop(Box::from_raw(ptr));
+    }
+
     pub fn data(&self) -> &T {
         &self.storage
     }
@@ -181,10 +188,6 @@ impl<T> RcInner<T> {
 
     pub fn into_inner(self) -> T {
         ManuallyDrop::into_inner(self.storage)
-    }
-
-    pub unsafe fn into_owned(inner: *mut Self) -> Self {
-        *Box::from_raw(inner)
     }
 
     #[inline]
@@ -207,7 +210,7 @@ impl<T> RcInner<T> {
         if State::from_raw(self.state.load(Ordering::SeqCst)).weak() > 0 {
             Self::decrement_weak(self, None);
         } else {
-            drop(Self::into_owned(self));
+            Self::dealloc(self);
         }
     }
 
@@ -378,7 +381,7 @@ unsafe fn dispose_general_node<T: GraphNode>(
             if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
                 rc.decrement_weak(Some(cs));
             } else {
-                drop(RcInner::into_owned(rc));
+                RcInner::dealloc(rc);
             }
         }
         for next in outgoings.drain(..) {

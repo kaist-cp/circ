@@ -105,14 +105,23 @@ impl<T> Tagged<T> {
         )
     }
 
+    /// # Safety
+    ///
+    /// The pointer (without high and low tag bits) must be a valid location to dereference.
     pub unsafe fn deref<'g>(&self) -> &'g T {
         &*self.as_raw()
     }
 
+    /// # Safety
+    ///
+    /// The pointer (without high and low tag bits) must be a valid location to dereference.
     pub unsafe fn deref_mut<'g>(&mut self) -> &'g mut T {
         &mut *self.as_raw()
     }
 
+    /// # Safety
+    ///
+    /// The pointer (without high and low tag bits) must be a valid location to dereference.
     pub unsafe fn as_ref<'g>(&self) -> Option<&'g T> {
         if self.is_null() {
             None
@@ -121,6 +130,9 @@ impl<T> Tagged<T> {
         }
     }
 
+    /// # Safety
+    ///
+    /// The pointer (without high and low tag bits) must be a valid location to dereference.
     pub unsafe fn as_mut<'g>(&mut self) -> Option<&'g mut T> {
         if self.is_null() {
             None
@@ -206,10 +218,7 @@ pub(crate) struct RawShared<'g, T> {
 
 impl<'g, T> Clone for RawShared<'g, T> {
     fn clone(&self) -> Self {
-        Self {
-            inner: self.inner,
-            _marker: PhantomData,
-        }
+        *self
     }
 }
 
@@ -263,8 +272,8 @@ impl<'g, T> RawShared<'g, T> {
         }
     }
 
-    pub unsafe fn into_owned(self) -> T {
-        *Box::from_raw(self.inner.as_raw())
+    pub unsafe fn drop(self) {
+        drop(Box::from_raw(self.inner.as_raw()))
     }
 
     pub unsafe fn deref(self) -> &'g T {
