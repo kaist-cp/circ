@@ -49,6 +49,7 @@
 //! want to create your own garbage collector, use the [`Collector`] API.
 
 mod collector;
+mod default;
 mod deferred;
 mod epoch;
 mod guard;
@@ -56,50 +57,8 @@ mod internal;
 mod pointers;
 mod sync;
 
-mod primitive {
-    pub(crate) mod cell {
-        #[derive(Debug)]
-        #[repr(transparent)]
-        pub(crate) struct UnsafeCell<T>(::core::cell::UnsafeCell<T>);
-
-        // loom's UnsafeCell has a slightly different API than the standard library UnsafeCell.
-        // Since we want the rest of the code to be agnostic to whether it's running under loom or
-        // not, we write this small wrapper that provides the loom-supported API for the standard
-        // library UnsafeCell. This is also what the loom documentation recommends:
-        // https://github.com/tokio-rs/loom#handling-loom-api-differences
-        impl<T> UnsafeCell<T> {
-            #[inline]
-            pub(crate) const fn new(data: T) -> UnsafeCell<T> {
-                UnsafeCell(::core::cell::UnsafeCell::new(data))
-            }
-
-            #[inline]
-            pub(crate) fn with<R>(&self, f: impl FnOnce(*const T) -> R) -> R {
-                f(self.0.get())
-            }
-
-            #[inline]
-            pub(crate) fn with_mut<R>(&self, f: impl FnOnce(*mut T) -> R) -> R {
-                f(self.0.get())
-            }
-        }
-    }
-    pub(crate) mod sync {
-        pub(crate) mod atomic {
-            pub(crate) use core::sync::atomic::compiler_fence;
-            pub(crate) use core::sync::atomic::fence;
-            pub(crate) use core::sync::atomic::AtomicUsize;
-        }
-    }
-}
-
-pub use self::collector::{Collector, LocalHandle};
-pub use self::epoch::Epoch;
-pub use self::guard::{unprotected, Cs};
-pub use self::internal::set_bag_capacity;
-pub use self::pointers::*;
-
-mod default;
-pub use self::default::{default_collector, global_epoch, is_pinned, pin};
-
-pub use self::internal::GLOBAL_GARBAGE_COUNT;
+pub use collector::Collector;
+pub use default::*;
+pub use epoch::*;
+pub use guard::*;
+pub use pointers::*;

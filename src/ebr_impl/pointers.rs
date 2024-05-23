@@ -54,7 +54,7 @@ impl<T> From<*mut T> for Tagged<T> {
     }
 }
 
-pub const HIGH_TAG_WIDTH: u32 = 4;
+pub(crate) const HIGH_TAG_WIDTH: u32 = 4;
 
 impl<T> Tagged<T> {
     const fn high_bits_pos() -> u32 {

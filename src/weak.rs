@@ -6,7 +6,8 @@ use std::{
 use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
-use crate::{Cs, Pointer, Snapshot, Tagged, TaggedCnt};
+use crate::ebr_impl::{Cs, Tagged};
+use crate::{Pointer, Snapshot, TaggedCnt};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -117,15 +118,6 @@ impl<T> AtomicWeak<T> {
             Ok(current) => Ok(current),
             Err(current) => Err(CompareExchangeErrorWeak { desired, current }),
         }
-    }
-
-    #[inline(always)]
-    pub fn fetch_or(&self, tag: usize, order: Ordering) -> TaggedCnt<T> {
-        // HACK: The size and alignment of `Atomic<TaggedCnt<T>>` will be same with `AtomicUsize`.
-        // The equality of the sizes is checked by `const_assert!`.
-        let link = unsafe { &*(&self.link as *const _ as *const AtomicUsize) };
-        let prev = link.fetch_or(tag, order);
-        TaggedCnt::from(prev as *mut _)
     }
 }
 

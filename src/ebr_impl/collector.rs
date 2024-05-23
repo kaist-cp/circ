@@ -1,11 +1,11 @@
 /// Epoch-based garbage collector.
 use core::fmt;
 use core::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use super::guard::Cs;
 use super::internal::{Global, Local};
 use super::Epoch;
-use std::sync::Arc;
 
 /// An epoch-based garbage collector.
 pub struct Collector {
@@ -148,9 +148,10 @@ mod tests {
                 let a = RawShared::from_owned(7);
                 guard.defer_destroy(a);
 
-                assert!(!(*guard.local).bag.with(|b| (*b).is_empty()));
+                let is_empty = || (*(*guard.local).bag.get()).is_empty();
+                assert!(!is_empty());
 
-                while !(*guard.local).bag.with(|b| (*b).is_empty()) {
+                while !is_empty() {
                     guard.flush();
                 }
             }
@@ -169,7 +170,7 @@ mod tests {
                 let a = RawShared::from_owned(7);
                 guard.defer_destroy(a);
             }
-            assert!(!(*guard.local).bag.with(|b| (*b).is_empty()));
+            assert!(!(*(*guard.local).bag.get()).is_empty());
         }
     }
 

@@ -8,7 +8,8 @@ use std::{
 use atomic::Atomic;
 use static_assertions::const_assert;
 
-use crate::{global_epoch, Cs, Pointer, RcInner, Tagged, TaggedCnt, Weak};
+use crate::ebr_impl::{global_epoch, Cs, Tagged};
+use crate::{Pointer, RcInner, TaggedCnt, Weak};
 
 pub trait GraphNode: Sized {
     /// Returns `Rc`s in this node.

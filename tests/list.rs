@@ -146,11 +146,14 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
         let curr_node = unsafe { self.curr.deref() };
 
         let next = curr_node.next.load(Ordering::Acquire, cs);
-        if curr_node
-            .next
-            .compare_exchange_tag(next.with_tag(0), 1, Ordering::AcqRel, Ordering::Relaxed, cs)
-            .is_err()
-        {
+        let e = curr_node.next.compare_exchange_tag(
+            next.with_tag(0),
+            1,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+            cs,
+        );
+        if e.is_err() {
             return Err(());
         }
 

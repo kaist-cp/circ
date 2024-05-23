@@ -2,8 +2,8 @@ use std::cell::Cell;
 use std::sync::atomic::Ordering;
 use std::{mem::ManuallyDrop, sync::atomic::AtomicU64};
 
-use crate::ebr_impl::{pin, HIGH_TAG_WIDTH};
-use crate::{global_epoch, Cs, GraphNode, Tagged};
+use crate::ebr_impl::{global_epoch, pin, Cs, Tagged, HIGH_TAG_WIDTH};
+use crate::GraphNode;
 
 pub type TaggedCnt<T> = Tagged<RcInner<T>>;
 
@@ -157,8 +157,8 @@ impl<const WIDTH: u32> Modular<WIDTH> {
 
 /// An instance of an object of type T with an atomic reference count.
 pub struct RcInner<T> {
-    pub storage: ManuallyDrop<T>,
-    pub state: AtomicU64,
+    storage: ManuallyDrop<T>,
+    state: AtomicU64,
 }
 
 impl<T> RcInner<T> {
@@ -184,10 +184,6 @@ impl<T> RcInner<T> {
 
     pub fn data_mut(&mut self) -> &mut T {
         &mut self.storage
-    }
-
-    pub fn into_inner(self) -> T {
-        ManuallyDrop::into_inner(self.storage)
     }
 
     #[inline]

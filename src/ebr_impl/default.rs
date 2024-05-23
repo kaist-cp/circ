@@ -25,12 +25,6 @@ pub fn pin() -> Cs {
     with_handle(|handle| handle.pin())
 }
 
-/// Returns `true` if the current thread is pinned.
-#[inline]
-pub fn is_pinned() -> bool {
-    with_handle(|handle| handle.is_pinned())
-}
-
 /// Returns the default global collector.
 pub fn default_collector() -> &'static Collector {
     collector()
@@ -47,7 +41,7 @@ where
 }
 
 #[inline]
-pub fn global_epoch() -> usize {
+pub(crate) fn global_epoch() -> usize {
     default_collector().global_epoch().value()
 }
 

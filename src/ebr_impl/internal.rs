@@ -35,12 +35,10 @@
 //! Ideally each instance of concurrent data structure may have its own queue that gets fully
 //! destroyed as soon as the data structure gets dropped.
 
-use super::primitive::cell::UnsafeCell;
-use super::primitive::sync::atomic;
 use super::RawShared;
-use core::cell::Cell;
-use core::mem::{self, ManuallyDrop};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::cell::{Cell, UnsafeCell};
+use core::mem::{forget, replace, ManuallyDrop};
+use core::sync::atomic::{compiler_fence, Ordering};
 use core::{fmt, ptr};
 
 use crossbeam_utils::CachePadded;
@@ -53,22 +51,11 @@ use super::guard::{unprotected, Cs};
 use super::sync::list::{Entry, IsElement, IterError, List};
 use super::sync::queue::Queue;
 
-#[allow(missing_docs)]
-pub static GLOBAL_GARBAGE_COUNT: AtomicUsize = AtomicUsize::new(0);
-
 // TODO: Add a more strict constant for sanitizing.
 /// Maximum number of objects a bag can contain.
 static mut MAX_OBJECTS: usize = 64;
 
 static mut MANUAL_EVENTS_BETWEEN_COLLECT: usize = 64;
-
-/// Sets the capacity of thread-local deferred bag.
-///
-/// Note that an update on this capacity may not be reflected immediately to concurrent threads,
-/// because there is no synchronization between reads and writes on the capacity variable.
-pub fn set_bag_capacity(max_objects: usize) {
-    unsafe { MAX_OBJECTS = max_objects };
-}
 
 /// A bag of deferred functions.
 pub(crate) struct Bag(Vec<Deferred>);
@@ -106,7 +93,7 @@ impl Bag {
 
     /// Seals the bag with the given epoch.
     fn seal(self, epoch: Epoch) -> SealedBag {
-        SealedBag { epoch, bag: self }
+        SealedBag { epoch, _bag: self }
     }
 }
 
@@ -136,7 +123,7 @@ impl fmt::Debug for Bag {
 #[derive(Default, Debug)]
 struct SealedBag {
     epoch: Epoch,
-    bag: Bag,
+    _bag: Bag,
 }
 
 /// It is safe to share `SealedBag` because `is_expired` only inspects the epoch.
@@ -180,8 +167,7 @@ impl Global {
 
     /// Pushes the bag into the global queue and replaces the bag with a new empty bag.
     pub(crate) fn push_bag(&self, bag: &mut Bag, guard: &Cs) {
-        GLOBAL_GARBAGE_COUNT.fetch_add(bag.0.len(), Ordering::AcqRel);
-        let bag = mem::replace(bag, Bag::new());
+        let bag = replace(bag, Bag::new());
 
         atomic::fence(Ordering::SeqCst);
 
@@ -216,7 +202,6 @@ impl Global {
             ) {
                 None => break,
                 Some(sealed_bag) => {
-                    GLOBAL_GARBAGE_COUNT.fetch_sub(sealed_bag.bag.0.len(), Ordering::AcqRel);
                     drop(sealed_bag);
                 }
             }
@@ -337,11 +322,6 @@ impl Local {
         }
     }
 
-    #[inline]
-    pub(crate) fn epoch(&self) -> Epoch {
-        self.epoch.load(Ordering::Relaxed)
-    }
-
     /// Returns a reference to the `Global` in which this `Local` resides.
     #[inline]
     pub(crate) fn global(&self) -> &Global {
@@ -351,7 +331,7 @@ impl Local {
     /// Returns a reference to the `Collector` in which this `Local` resides.
     #[inline]
     pub(crate) fn collector(&self) -> &Collector {
-        self.collector.with(|c| unsafe { &**c })
+        unsafe { &*self.collector.get() }
     }
 
     /// Returns `true` if the current participant is pinned.
@@ -366,7 +346,7 @@ impl Local {
     ///
     /// It should be safe for another thread to execute the given function.
     pub(crate) unsafe fn defer(&self, mut deferred: Deferred, guard: &Cs) {
-        let bag = self.bag.with_mut(|b| &mut *b);
+        let bag = &mut *self.bag.get();
 
         while let Err(d) = bag.try_push(deferred) {
             self.global().push_bag(bag, guard);
@@ -382,7 +362,7 @@ impl Local {
     }
 
     pub(crate) fn push_to_global(&self, guard: &Cs) {
-        let bag = self.bag.with_mut(|b| unsafe { &mut *b });
+        let bag = unsafe { &mut *self.bag.get() };
 
         if !bag.is_empty() {
             self.global().push_bag(bag, guard);
@@ -449,7 +429,7 @@ impl Local {
                     // We add a compiler fence to make it less likely for LLVM to do something wrong
                     // here.  Formally, this is not enough to get rid of data races; practically,
                     // it should go a long way.
-                    atomic::compiler_fence(Ordering::SeqCst);
+                    compiler_fence(Ordering::SeqCst);
                 } else {
                     self.epoch.store(new_epoch, Ordering::Relaxed);
                     atomic::fence(Ordering::SeqCst);
@@ -502,8 +482,8 @@ impl Local {
     pub(crate) fn repin(&self) {
         self.acquire_handle();
         self.unpin();
-        atomic::compiler_fence(Ordering::SeqCst);
-        mem::forget(self.pin());
+        compiler_fence(Ordering::SeqCst);
+        forget(self.pin());
         self.release_handle();
     }
 
@@ -565,7 +545,7 @@ impl Local {
             // Take the reference to the `Global` out of this `Local`. Since we're not protected
             // by a guard at this time, it's crucial that the reference is read before marking the
             // `Local` as deleted.
-            let collector: Collector = ptr::read(self.collector.with(|c| &*(*c)));
+            let collector: Collector = ptr::read(&**self.collector.get());
 
             // Mark this node in the linked list as deleted.
             self.entry.delete(&unprotected());
@@ -584,10 +564,6 @@ impl Local {
         if manual_count % unsafe { MANUAL_EVENTS_BETWEEN_COLLECT } == 0 {
             self.flush(guard);
         }
-    }
-
-    pub(crate) fn bag_len(&self) -> usize {
-        self.bag.with(|b| unsafe { &*b }.0.len())
     }
 }
 
