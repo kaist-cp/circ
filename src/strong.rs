@@ -533,7 +533,7 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
     ///
     /// The pointer must be a valid memory location to dereference.
     #[inline]
-    pub unsafe fn deref(&self) -> &'g T {
+    pub unsafe fn deref(self) -> &'g T {
         self.as_ptr().deref().data()
     }
 
@@ -542,12 +542,12 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
     /// The pointer must be a valid memory location to dereference and
     /// other threads must not have references to the object.
     #[inline]
-    pub unsafe fn deref_mut(&mut self) -> &'g mut T {
+    pub unsafe fn deref_mut(self) -> &'g mut T {
         self.as_ptr().deref_mut().data_mut()
     }
 
     #[inline]
-    pub fn as_ref(&self) -> Option<&'g T> {
+    pub fn as_ref(self) -> Option<&'g T> {
         if self.as_ptr().is_null() {
             None
         } else {
@@ -559,7 +559,7 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
     ///
     /// Other threads must not have references to the object.
     #[inline]
-    pub unsafe fn as_mut(&mut self) -> Option<&'g mut T> {
+    pub unsafe fn as_mut(self) -> Option<&'g mut T> {
         if self.as_ptr().is_null() {
             None
         } else {

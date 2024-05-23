@@ -3,16 +3,6 @@ use circ::{AtomicRc, Cs, GraphNode, Rc, Snapshot};
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 
-/// Some or executing the given expression.
-macro_rules! some_or {
-    ($e:expr, $err:expr) => {{
-        match $e {
-            Some(r) => r,
-            None => $err,
-        }
-    }};
-}
-
 struct Node<K, V> {
     next: AtomicRc<Self>,
     key: K,
@@ -92,7 +82,9 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
         // 1 -> 2 -x-> 3 -x-> 4 -> 5 -> ∅  (search key: 4)
         let mut prev_next = self.curr;
         let found = loop {
-            let curr_node = some_or!(self.curr.as_ref(), break None);
+            let Some(curr_node) = self.curr.as_ref() else {
+                break None;
+            };
             let next = curr_node.next.load(Ordering::Acquire, cs);
 
             if next.tag() != 0 {
