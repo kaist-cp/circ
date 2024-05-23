@@ -51,7 +51,6 @@ use super::guard::{unprotected, Cs};
 use super::sync::list::{Entry, IsElement, IterError, List};
 use super::sync::queue::Queue;
 
-// TODO: Add a more strict constant for sanitizing.
 /// Maximum number of objects a bag can contain.
 static mut MAX_OBJECTS: usize = 64;
 
@@ -221,7 +220,7 @@ impl Global {
         let global_epoch = self.epoch.load(Ordering::Relaxed);
         atomic::fence(Ordering::SeqCst);
 
-        // TODO(stjepang): `Local`s are stored in a linked list because linked lists are fairly
+        // `Local`s are stored in a linked list because linked lists are fairly
         // easy to implement in a lock-free manner. However, traversal can be slow due to cache
         // misses and data dependencies. We should experiment with other data structures as well.
         for local in self.locals.iter(guard) {

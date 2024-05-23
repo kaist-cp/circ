@@ -7,7 +7,7 @@ use atomic::{Atomic, Ordering};
 use static_assertions::const_assert;
 
 use crate::ebr_impl::{Cs, Tagged};
-use crate::{Pointer, Snapshot, TaggedCnt};
+use crate::{Pointer, RcInner, Snapshot, TaggedCnt};
 
 /// A result of unsuccessful `compare_exchange`.
 ///
@@ -70,7 +70,7 @@ impl<T> AtomicWeak<T> {
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                cnt.decrement_weak(Some(cs));
+                RcInner::decrement_weak(cnt, Some(cs));
             }
         }
     }
@@ -137,7 +137,7 @@ impl<T> Drop for AtomicWeak<T> {
         let ptr = self.link.load(Ordering::SeqCst);
         unsafe {
             if let Some(cnt) = ptr.as_raw().as_mut() {
-                cnt.decrement_weak(None);
+                RcInner::decrement_weak(cnt, None);
             }
         }
     }
@@ -232,7 +232,7 @@ impl<T> Drop for Weak<T> {
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                cnt.decrement_weak(None);
+                RcInner::decrement_weak(cnt, None);
             }
         }
     }

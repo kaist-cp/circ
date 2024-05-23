@@ -17,24 +17,23 @@ pub trait Pointer<T> {
 trait Deferable {
     unsafe fn defer_with_inner<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
-        F: FnOnce(&mut RcInner<T>);
+        F: FnOnce(*mut RcInner<T>);
 }
 
 impl Deferable for Cs {
     unsafe fn defer_with_inner<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
-        F: FnOnce(&mut RcInner<T>),
+        F: FnOnce(*mut RcInner<T>),
     {
         debug_assert!(!ptr.is_null());
-        let cnt = &mut *ptr;
-        self.defer_unchecked(move || f(cnt));
+        self.defer_unchecked(move || f(ptr));
     }
 }
 
 impl Deferable for Option<&Cs> {
     unsafe fn defer_with_inner<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
-        F: FnOnce(&mut RcInner<T>),
+        F: FnOnce(*mut RcInner<T>),
     {
         if let Some(cs) = self {
             cs.defer_with_inner(ptr, f)
@@ -200,13 +199,12 @@ impl<T> RcInner<T> {
         true
     }
 
-    /// TODO: why mut?
     #[inline]
-    unsafe fn try_dealloc(&mut self) {
-        if State::from_raw(self.state.load(Ordering::SeqCst)).weak() > 0 {
-            Self::decrement_weak(self, None);
+    unsafe fn try_dealloc(ptr: *mut Self) {
+        if State::from_raw((*ptr).state.load(Ordering::SeqCst)).weak() > 0 {
+            Self::decrement_weak(ptr, None);
         } else {
-            Self::dealloc(self);
+            Self::dealloc(ptr);
         }
     }
 
@@ -239,10 +237,10 @@ impl<T> RcInner<T> {
     }
 
     #[inline]
-    pub(crate) unsafe fn decrement_weak(&mut self, cs: Option<&Cs>) {
-        debug_assert!(State::from_raw(self.state.load(Ordering::SeqCst)).weak() >= 1);
-        if State::from_raw(self.state.fetch_sub(WEAK_COUNT, Ordering::SeqCst)).weak() == 1 {
-            cs.defer_with_inner(self, |inner| Self::try_dealloc(inner));
+    pub(crate) unsafe fn decrement_weak(ptr: *mut Self, cs: Option<&Cs>) {
+        debug_assert!(State::from_raw((*ptr).state.load(Ordering::SeqCst)).weak() >= 1);
+        if State::from_raw((*ptr).state.fetch_sub(WEAK_COUNT, Ordering::SeqCst)).weak() == 1 {
+            cs.defer_with_inner(ptr, |inner| Self::try_dealloc(inner));
         }
     }
 
@@ -266,13 +264,13 @@ impl<T> RcInner<T> {
 
 impl<T: GraphNode> RcInner<T> {
     #[inline]
-    pub(crate) unsafe fn decrement_strong(&mut self, count: u32, cs: Option<&Cs>) {
+    pub(crate) unsafe fn decrement_strong(ptr: *mut Self, count: u32, cs: Option<&Cs>) {
         let epoch = global_epoch();
         // Should mark the current epoch on the strong count with CAS.
         let hit_zero = loop {
-            let curr = State::from_raw(self.state.load(Ordering::SeqCst));
+            let curr = State::from_raw((*ptr).state.load(Ordering::SeqCst));
             debug_assert!(curr.strong() >= count);
-            if self
+            if (*ptr)
                 .state
                 .compare_exchange(
                     curr.as_raw(),
@@ -286,39 +284,38 @@ impl<T: GraphNode> RcInner<T> {
             }
         };
 
-        // TODO: simplify with trait
-        // `incr_manual_collection` periodically triggers a collection.
+        let trigger_recl = |cs: &Cs| {
+            if hit_zero {
+                cs.defer_with_inner(ptr, |inner| Self::try_destruct(inner));
+            }
+            // Periodically triggers a collection.
+            cs.incr_manual_collection();
+        };
+
         if let Some(cs) = cs {
-            if hit_zero {
-                cs.defer_with_inner(self, |inner| Self::try_destruct(inner));
-            }
-            cs.incr_manual_collection();
+            trigger_recl(cs)
         } else {
-            let cs = pin();
-            if hit_zero {
-                cs.defer_with_inner(self, |inner| Self::try_destruct(inner));
-            }
-            cs.incr_manual_collection();
+            trigger_recl(&pin())
         }
     }
 
     #[inline]
-    unsafe fn try_destruct(&mut self) {
-        let mut old = State::from_raw(self.state.load(Ordering::SeqCst));
+    unsafe fn try_destruct(ptr: *mut Self) {
+        let mut old = State::from_raw((*ptr).state.load(Ordering::SeqCst));
         debug_assert!(!old.destructed());
         loop {
             if old.strong() > 0 {
-                Self::decrement_strong(self, 1, None);
+                Self::decrement_strong(ptr, 1, None);
                 return;
             }
-            match self.state.compare_exchange(
+            match (*ptr).state.compare_exchange(
                 old.as_raw(),
                 old.with_destructed(true).as_raw(),
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
                 // Note that `decrement_weak` will be called in `dispose`.
-                Ok(_) => return dispose(self),
+                Ok(_) => return dispose(ptr),
                 Err(curr) => old = State::from_raw(curr),
             }
         }
@@ -355,7 +352,7 @@ unsafe fn dispose_general_node<T: GraphNode>(
 
     if depth >= 1024 {
         // Prevent a potential stack overflow.
-        cs.defer_with_inner(rc, |rc| rc.try_destruct());
+        cs.defer_with_inner(rc, |rc| RcInner::try_destruct(rc));
         return;
     }
 
@@ -375,7 +372,7 @@ unsafe fn dispose_general_node<T: GraphNode>(
         unsafe {
             ManuallyDrop::drop(&mut rc.storage);
             if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
-                rc.decrement_weak(Some(cs));
+                RcInner::decrement_weak(rc, Some(cs));
             } else {
                 RcInner::dealloc(rc);
             }
@@ -417,6 +414,6 @@ unsafe fn dispose_general_node<T: GraphNode>(
         }
     } else {
         // It is likely to be unsafe to reclaim right now.
-        cs.defer_with_inner(rc, |rc| rc.try_destruct());
+        cs.defer_with_inner(rc, |rc| RcInner::try_destruct(rc));
     }
 }

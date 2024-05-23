@@ -93,7 +93,7 @@ impl<T: GraphNode> AtomicRc<T> {
         unsafe {
             // Did not use `Rc::drop`, to reuse the given `cs`.
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                cnt.decrement_strong(1, Some(cs));
+                RcInner::decrement_strong(cnt, 1, Some(cs));
             }
         }
     }
@@ -110,7 +110,6 @@ impl<T: GraphNode> AtomicRc<T> {
     /// the same managed object, replaces the current pointer with a copy of desired
     /// (incrementing its reference count) and returns true. Otherwise, returns false.
     /// TODO: rename desired/expected to more Rust-like names.
-    /// TODO: should resurrect `current`? Think about this.
     #[inline(always)]
     pub fn compare_exchange<'g>(
         &self,
@@ -227,7 +226,7 @@ impl<T: GraphNode> Drop for AtomicRc<T> {
         unsafe {
             let ptr = self.link.load(Ordering::Relaxed);
             if let Some(cnt) = ptr.as_raw().as_mut() {
-                cnt.decrement_strong(1, None);
+                RcInner::decrement_strong(cnt, 1, None);
             }
         }
     }
@@ -346,7 +345,7 @@ impl<T: GraphNode> Rc<T> {
     pub fn finalize(self, cs: &Cs) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                cnt.decrement_strong(1, Some(cs));
+                RcInner::decrement_strong(cnt, 1, Some(cs));
             }
         }
         forget(self);
@@ -419,7 +418,7 @@ impl<T: GraphNode> Drop for Rc<T> {
     fn drop(&mut self) {
         unsafe {
             if let Some(cnt) = self.ptr.as_raw().as_mut() {
-                cnt.decrement_strong(1, None);
+                RcInner::decrement_strong(cnt, 1, None);
             }
         }
     }
@@ -456,12 +455,10 @@ impl<T: GraphNode> Iterator for NewRcIter<T> {
 
 impl<T: GraphNode> NewRcIter<T> {
     #[inline]
-    pub fn halt(mut self, cs: &Cs) {
+    pub fn halt(self, cs: &Cs) {
         if self.remain > 0 {
             unsafe {
-                self.ptr
-                    .deref_mut()
-                    .decrement_strong(self.remain as _, Some(cs))
+                RcInner::decrement_strong(self.ptr.as_raw(), self.remain as _, Some(cs));
             };
         }
         forget(self);
@@ -473,9 +470,7 @@ impl<T: GraphNode> Drop for NewRcIter<T> {
     fn drop(&mut self) {
         if self.remain > 0 {
             unsafe {
-                self.ptr
-                    .deref_mut()
-                    .decrement_strong(self.remain as _, None)
+                RcInner::decrement_strong(self.ptr.as_raw(), self.remain as _, None);
             };
         }
     }
