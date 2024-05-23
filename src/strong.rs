@@ -10,12 +10,10 @@ use static_assertions::const_assert;
 
 use crate::{global_epoch, Cs, Pointer, RcInner, Tagged, TaggedCnt, Weak};
 
-pub trait GraphNode {
+pub trait GraphNode: Sized {
     /// Returns `Rc`s in this node.
     /// It is safe to return less than the actual amount of `Rc`s.
-    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>)
-    where
-        Self: Sized;
+    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>);
 }
 
 impl<T> Tagged<RcInner<T>> {

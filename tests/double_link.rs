@@ -23,10 +23,7 @@ struct Node<T> {
 }
 
 impl<T> GraphNode for Node<T> {
-    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>)
-    where
-        Self: Sized,
-    {
+    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>) {
         result.push(self.next.take());
     }
 }

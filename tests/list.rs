@@ -10,10 +10,7 @@ struct Node<K, V> {
 }
 
 impl<K, V> GraphNode for Node<K, V> {
-    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>)
-    where
-        Self: Sized,
-    {
+    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>) {
         result.push(self.next.swap(Rc::null(), Ordering::Relaxed));
     }
 }
