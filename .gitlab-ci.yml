@@ -1,0 +1,49 @@
+# Setup a cache to cache job parts between jobs to ensure faster builds
+cache:
+  key: "$CI_JOB_NAME"
+  untracked: true
+  paths:
+    - $HOME/.cargo/
+    - target/
+
+# Set any required environment variables here
+variables:
+  RUST_BACKTRACE: "FULL"
+  GIT_SUBMODULE_STRATEGY: recursive
+
+image: rust:latest
+
+stages:
+  - install
+  - test
+  - deploy
+
+install:
+  stage: install
+  script:
+    # Trigger installation
+    - rustc --version
+
+check:
+  stage: test
+  before_script:
+    - rustup component add rustfmt clippy
+    - cargo install cargo-audit
+  script:
+    - cargo check --verbose
+    - cargo fmt -- --check
+    - cargo clippy -- -D warnings
+    - cargo audit
+    - cargo test
+    - cargo test --release
+
+pages:
+  stage: deploy
+  script:
+    - cargo doc --no-deps
+    - mkdir -p public && cp -r target/doc/* public
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
