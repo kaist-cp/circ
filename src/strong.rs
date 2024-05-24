@@ -14,7 +14,7 @@ use crate::{Pointer, RcInner, TaggedCnt, Weak};
 pub trait GraphNode: Sized {
     /// Returns `Rc`s in this node.
     /// It is safe to return less than the actual amount of `Rc`s.
-    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>);
+    fn pop_outgoings(&mut self) -> Vec<Rc<Self>>;
 }
 
 impl<T> Tagged<RcInner<T>> {

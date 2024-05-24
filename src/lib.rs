@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 pub(crate) mod ebr_impl;
 mod strong;
 mod utils;

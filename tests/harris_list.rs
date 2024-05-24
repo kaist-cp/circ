@@ -10,8 +10,8 @@ struct Node<K, V> {
 }
 
 impl<K, V> GraphNode for Node<K, V> {
-    fn pop_outgoings(&mut self, result: &mut Vec<Rc<Self>>) {
-        result.push(self.next.swap(Rc::null(), Ordering::Relaxed));
+    fn pop_outgoings(&mut self) -> Vec<Rc<Self>> {
+        vec![self.next.take()]
     }
 }
 
@@ -107,7 +107,9 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
         }
 
         // cleanup tagged nodes between anchor and curr
-        unsafe { self.prev.deref() }
+        self.prev
+            .as_ref()
+            .unwrap()
             .next
             .compare_exchange(
                 prev_next,
@@ -124,11 +126,12 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
     /// Inserts a value.
     #[inline]
     pub fn insert(self, node: Rc<Node<K, V>>, cs: &Cs) -> Result<(), Rc<Node<K, V>>> {
-        unsafe { node.deref() }
+        node.as_ref()
+            .unwrap()
             .next
             .swap(self.curr.upgrade(), Ordering::Relaxed);
 
-        match unsafe { self.prev.deref() }.next.compare_exchange(
+        match self.prev.as_ref().unwrap().next.compare_exchange(
             self.curr,
             node,
             Ordering::Release,
@@ -143,7 +146,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
     /// removes the current node.
     #[inline]
     pub fn remove(self, cs: &Cs) -> Result<(), ()> {
-        let curr_node = unsafe { self.curr.deref() };
+        let curr_node = self.curr.as_ref().unwrap();
 
         let next = curr_node.next.load(Ordering::Acquire, cs);
         let e = curr_node.next.compare_exchange_tag(
@@ -157,7 +160,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
             return Err(());
         }
 
-        let _ = unsafe { self.prev.deref() }.next.compare_exchange(
+        let _ = self.prev.as_ref().unwrap().next.compare_exchange(
             self.curr,
             next.upgrade(),
             Ordering::Release,
@@ -201,7 +204,7 @@ where
     {
         let mut node = Rc::new(Node::new(key, value));
         loop {
-            let (found, cursor) = self.get(&unsafe { node.deref() }.key, &find, cs);
+            let (found, cursor) = self.get(node.as_ref().map(|node| &node.key).unwrap(), &find, cs);
             if found.is_some() {
                 return found;
             }
