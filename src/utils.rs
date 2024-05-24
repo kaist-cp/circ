@@ -7,8 +7,12 @@ use crate::GraphNode;
 
 pub type TaggedCnt<T> = Tagged<RcInner<T>>;
 
+/// A trait for all smart pointer types.
 pub trait Pointer<T> {
+    /// Returns an underlying raw tagged pointer.
     fn as_ptr(&self) -> TaggedCnt<T>;
+
+    /// Returns `true` if the pointer is null.
     fn is_null(&self) -> bool {
         self.as_ptr().is_null()
     }
@@ -154,7 +158,7 @@ impl<const WIDTH: u32> Modular<WIDTH> {
     }
 }
 
-/// An instance of an object of type T with an atomic reference count.
+/// A reference-counted object of type `T` with an atomic reference counts.
 pub struct RcInner<T> {
     storage: ManuallyDrop<T>,
     state: AtomicU64,
@@ -177,10 +181,12 @@ impl<T> RcInner<T> {
         drop(Box::from_raw(ptr));
     }
 
+    /// Returns an immutable reference to the object.
     pub fn data(&self) -> &T {
         &self.storage
     }
 
+    /// Returns a mutable reference to the object.
     pub fn data_mut(&mut self) -> &mut T {
         &mut self.storage
     }

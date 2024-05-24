@@ -8,7 +8,7 @@ use super::deferred::Deferred;
 use super::internal::Local;
 use super::RawShared;
 
-/// A guard that keeps the current thread pinned.
+/// A RAII-style guard that keeps the current thread pinned.
 pub struct Cs {
     pub(crate) local: *const Local,
 }
@@ -174,13 +174,10 @@ impl fmt::Debug for Cs {
 /// This guard should be used in special occasions only. Note that it doesn't actually keep any
 /// thread pinned - it's just a fake guard that allows loading from [`crate::AtomicRc`]s unsafely.
 ///
-/// Note that calling [`defer`] with a dummy guard will not defer the function - it will just
-/// execute the function immediately.
-///
 /// # Safety
 ///
-/// Loading and dereferencing data from an [`crate::AtomicRc`] using this guard is safe only if
-/// the [`crate::AtomicRc`] is not being concurrently modified by other threads.
+/// Loading and dereferencing data from atomic shared pointers using this guard is safe only if
+/// the pointers are not being concurrently modified by other threads.
 #[inline]
 pub unsafe fn unprotected() -> Cs {
     Cs {

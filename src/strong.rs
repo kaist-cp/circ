@@ -1,9 +1,10 @@
 use std::{
     array,
     marker::PhantomData,
-    mem::{self, forget},
+    mem::{forget, size_of},
     sync::atomic::{AtomicUsize, Ordering},
 };
+use Ordering::*;
 
 use atomic::Atomic;
 use static_assertions::const_assert;
@@ -11,9 +12,51 @@ use static_assertions::const_assert;
 use crate::ebr_impl::{global_epoch, Cs, Tagged};
 use crate::{Pointer, RcInner, TaggedCnt, Weak};
 
+/// A common trait for reference-counted object types.
+///
+/// This trait enables *immediate recursive destruction*,
+/// which identifies the outgoing edges of the reclaiming nodes and
+/// recursively destructs the subsequent chain of unreachable nodes.
+///
+/// # Examples
+///
+/// ```
+/// use circ::{AtomicRc, GraphNode, Rc};
+///
+/// // A simple singly linked list node.
+/// struct ListNode {
+///     item: usize,
+///     next: AtomicRc<Self>,
+/// }
+///
+/// impl GraphNode for ListNode {
+///     fn pop_outgoings(&mut self) -> Vec<Rc<Self>> {
+///         vec![self.next.take()]
+///     }
+/// }
+///
+/// // A tree node with two children.
+/// struct TreeNode {
+///     item: usize,
+///     left: AtomicRc<Self>,
+///     right: AtomicRc<Self>,
+/// }
+///
+/// impl GraphNode for TreeNode {
+///     fn pop_outgoings(&mut self) -> Vec<Rc<Self>> {
+///         vec![self.left.take(), self.right.take()]
+///     }
+/// }
+/// ```
 pub trait GraphNode: Sized {
-    /// Returns `Rc`s in this node.
-    /// It is safe to return less than the actual amount of `Rc`s.
+    /// Returns [`Rc`]s in this node.
+    ///
+    /// This method is called by the CIRC algorithm just before an object is destructed.
+    ///
+    /// Its implementation is straightforward: simply return outgoing `Rc` pointers in the node.
+    /// It may be convinient to use [`AtomicRc::take`] because it provides
+    /// a mutable reference to the node. Additionally, it remains safe even if this
+    /// method is not implemented correctly (e.g., returning fewer pointers than it actually has).
     fn pop_outgoings(&mut self) -> Vec<Rc<Self>>;
 }
 
@@ -27,16 +70,21 @@ impl<T> Tagged<RcInner<T>> {
     }
 }
 
-/// A result of unsuccessful `compare_exchange`.
+/// A result of unsuccessful [`AtomicRc::compare_exchange`].
 ///
-/// It returns the ownership of [`Rc`] pointer which was given as a parameter.
+/// It returns the ownership of the pointer which was given as a parameter `desired`.
 pub struct CompareExchangeErrorRc<'g, T, P> {
-    /// The `desired` which was given as a parameter of `compare_exchange`.
+    /// The `desired` which was given as a parameter of [`AtomicRc::compare_exchange`].
     pub desired: P,
     /// The current pointer value inside the atomic pointer.
     pub current: Snapshot<'g, T>,
 }
 
+/// A atomically mutable field that contains an [`Rc<T>`].
+///
+/// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
+/// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
+/// should be less than `(1 << align_of::<T>().trailing_zeros())`.
 pub struct AtomicRc<T: GraphNode> {
     link: Atomic<TaggedCnt<T>>,
     _marker: PhantomData<T>,
@@ -48,10 +96,11 @@ unsafe impl<T: GraphNode + Send + Sync> Sync for AtomicRc<T> {}
 // Ensure that TaggedPtr<T> is 8-byte long,
 // so that lock-free atomic operations are possible.
 const_assert!(Atomic::<TaggedCnt<u8>>::is_lock_free());
-const_assert!(mem::size_of::<TaggedCnt<u8>>() == mem::size_of::<usize>());
-const_assert!(mem::size_of::<Atomic<TaggedCnt<u8>>>() == mem::size_of::<AtomicUsize>());
+const_assert!(size_of::<TaggedCnt<u8>>() == size_of::<usize>());
+const_assert!(size_of::<Atomic<TaggedCnt<u8>>>() == size_of::<AtomicUsize>());
 
 impl<T: GraphNode> AtomicRc<T> {
+    /// Constructs a new `AtomicRc` by allocating a new reference-couned object.
     #[inline(always)]
     pub fn new(obj: T) -> Self {
         Self {
@@ -60,6 +109,7 @@ impl<T: GraphNode> AtomicRc<T> {
         }
     }
 
+    /// Constructs a new `AtomicRc` containing a null pointer.
     #[inline(always)]
     pub fn null() -> Self {
         Self {
@@ -68,21 +118,39 @@ impl<T: GraphNode> AtomicRc<T> {
         }
     }
 
-    /// Loads a raw tagged pointer from this atomic pointer.
+    /// Loads a raw tagged pointer from this `AtomicRc`.
+    ///
+    /// This method takes an [`Ordering`] argument which describes the memory ordering of this
+    /// operation. Possible values are [`SeqCst`], [`Acquire`] and [`Relaxed`].
     ///
     /// Note that the returned pointer cannot be dereferenced safely, becuase it is protected by
-    /// neither a SMR nor a reference count. To dereference, use `load` method of [`Snapshot`]
-    /// instead.
+    /// neither a SMR nor a reference count. To dereference, use [`AtomicRc::load`] method instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `order` is [`Release`] or [`AcqRel`].
     #[inline]
     pub fn load_raw(&self, order: Ordering) -> TaggedCnt<T> {
         self.link.load(order)
     }
 
+    /// Loads a [`Snapshot`] pointer from this `AtomicRc`.
+    ///
+    /// This method takes an [`Ordering`] argument which describes the memory ordering of this
+    /// operation. Possible values are [`SeqCst`], [`Acquire`] and [`Relaxed`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `order` is [`Release`] or [`AcqRel`].
     #[inline]
     pub fn load<'g>(&self, order: Ordering, cs: &'g Cs) -> Snapshot<'g, T> {
         Snapshot::from_raw(self.load_raw(order), cs)
     }
 
+    /// Stores a [`Snapshot`] or [`Rc`] pointer into this `AtomicRc`.
+    ///
+    /// This method takes an [`Ordering`] argument which describes the memory ordering of
+    /// this operation.
     #[inline]
     pub fn store(&self, ptr: impl StrongPtr<T>, order: Ordering, cs: &Cs) {
         let ptr = ptr.into_rc();
@@ -98,7 +166,11 @@ impl<T: GraphNode> AtomicRc<T> {
         }
     }
 
-    /// Swaps the currently stored shared pointer with the given shared pointer.
+    /// Stores a [`Snapshot`] or [`Rc`] pointer into this `AtomicRc`,
+    /// returning the previous [`Rc`].
+    ///
+    /// This method takes an [`Ordering`] argument which describes the memory ordering of
+    /// this operation.
     #[inline(always)]
     pub fn swap(&self, new: Rc<T>, order: Ordering) -> Rc<T> {
         let new_ptr = new.into_raw();
@@ -106,10 +178,22 @@ impl<T: GraphNode> AtomicRc<T> {
         Rc::from_raw(old_ptr)
     }
 
-    /// Atomically compares the underlying pointer with expected, and if they refer to
-    /// the same managed object, replaces the current pointer with a copy of desired
-    /// (incrementing its reference count) and returns true. Otherwise, returns false.
-    /// TODO: rename desired/expected to more Rust-like names.
+    /// Stores the [`Rc`] pointer `desired` into the atomic pointer if the current value is the
+    /// same as `expected` (either [`Snapshot`] or [`Rc`]). The tag is also taken into account,
+    /// so two pointers to the same object, but with different tags, will not be considered equal.
+    ///
+    /// The return value is a result indicating whether the desired pointer was written.
+    /// On success the pointer that was in this `AtomicRc` is returned.
+    /// On failure the actual current value and `desired` are returned.
+    ///
+    /// This method takes two [`Ordering`] arguments to describe the memory
+    /// ordering of this operation. `success` describes the required ordering for the
+    /// read-modify-write operation that takes place if the comparison with `expected` succeeds.
+    /// `failure` describes the required ordering for the load operation that takes place when
+    /// the comparison fails. Using [`Acquire`] as success ordering makes the store part
+    /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
+    /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
+    /// and must be equivalent to or weaker than the success ordering.
     #[inline(always)]
     pub fn compare_exchange<'g>(
         &self,
@@ -144,11 +228,24 @@ impl<T: GraphNode> AtomicRc<T> {
         }
     }
 
-    /// Atomically compares the underlying pointer with expected, and if they refer to
-    /// the same managed object, replaces the current pointer with a copy of desired
-    /// (incrementing its reference count) and returns true. Otherwise, returns false.
+    /// Stores the [`Rc`] pointer `desired` into the atomic pointer if the current value is the
+    /// same as `expected` (either [`Snapshot`] or [`Rc`]). The tag is also taken into account,
+    /// so two pointers to the same object, but with different tags, will not be considered equal.
     ///
-    /// This function is allowed to spuriously fail even when the comparison succeeds.
+    /// Unlike [`AtomicRc::compare_exchange`], this method is allowed to spuriously fail
+    /// even when comparison succeeds, which can result in more efficient code on some platforms.
+    /// The return value is a result indicating whether the desired pointer was written.
+    /// On success the pointer that was in this `AtomicRc` is returned.
+    /// On failure the actual current value and `desired` are returned.
+    ///
+    /// This method takes two [`Ordering`] arguments to describe the memory
+    /// ordering of this operation. `success` describes the required ordering for the
+    /// read-modify-write operation that takes place if the comparison with `expected` succeeds.
+    /// `failure` describes the required ordering for the load operation that takes place when
+    /// the comparison fails. Using [`Acquire`] as success ordering makes the store part
+    /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
+    /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
+    /// and must be equivalent to or weaker than the success ordering.
     #[inline(always)]
     pub fn compare_exchange_weak<'g>(
         &self,
@@ -183,6 +280,25 @@ impl<T: GraphNode> AtomicRc<T> {
         }
     }
 
+    /// Overwrites the tag value `desired_tag` to the atomic pointer if the current value is the
+    /// same as `expected` (either [`Snapshot`] or [`Rc`]). The tag is also taken into account,
+    /// so two pointers to the same object, but with different tags, will not be considered equal.
+    ///
+    /// If the `desired_tag` uses more bits than the unused least significant bits of the pointer
+    /// to `T`, it will be truncated to be fit.
+    ///
+    /// The return value is a result indicating whether the desired pointer was written.
+    /// On success the pointer that was in this `AtomicRc` is returned.
+    /// On failure the actual current value and a desired pointer to write are returned.
+    ///
+    /// This method takes two [`Ordering`] arguments to describe the memory
+    /// ordering of this operation. `success` describes the required ordering for the
+    /// read-modify-write operation that takes place if the comparison with `expected` succeeds.
+    /// `failure` describes the required ordering for the load operation that takes place when
+    /// the comparison fails. Using [`Acquire`] as success ordering makes the store part
+    /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
+    /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
+    /// and must be equivalent to or weaker than the success ordering.
     #[inline]
     pub fn compare_exchange_tag<'g>(
         &self,
@@ -212,10 +328,14 @@ impl<T: GraphNode> AtomicRc<T> {
         }
     }
 
+    /// Takes an underlying [`Rc`] from this [`AtomicRc`], leaving a null pointer.
+    ///
+    /// It is more efficient than [`AtomicRc::swap`] because it calls an atomic store operation
+    /// which is cheaper than read-modify-write operations.
     #[inline]
     pub fn take(&mut self) -> Rc<T> {
-        let ptr = self.link.load(Ordering::Relaxed);
-        self.link.store(Tagged::null(), Ordering::Relaxed);
+        let ptr = self.link.load(Relaxed);
+        self.link.store(Tagged::null(), Relaxed);
         Rc::from_raw(ptr)
     }
 }
@@ -224,7 +344,7 @@ impl<T: GraphNode> Drop for AtomicRc<T> {
     #[inline(always)]
     fn drop(&mut self) {
         unsafe {
-            let ptr = self.link.load(Ordering::Relaxed);
+            let ptr = self.link.load(Relaxed);
             if let Some(cnt) = ptr.as_raw().as_mut() {
                 RcInner::decrement_strong(cnt, 1, None);
             }
@@ -250,6 +370,15 @@ impl<T: GraphNode> From<Rc<T>> for AtomicRc<T> {
     }
 }
 
+/// A smart pointer for reference-counted pointer to an object of type `T`.
+///
+/// Unlike [`Snapshot`] pointer, This pointer owns a strong reference count by itself, preventing
+/// reclamation by the backend EBR. When `T` implements [`Send`] and [`Sync`], [`Rc<T>`] also
+/// implements these traits.
+///
+/// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
+/// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
+/// should be less than `(1 << align_of::<T>().trailing_zeros())`.
 pub struct Rc<T: GraphNode> {
     ptr: TaggedCnt<T>,
     _marker: PhantomData<T>,
@@ -274,6 +403,7 @@ impl<T: GraphNode> Clone for Rc<T> {
 }
 
 impl<T: GraphNode> Rc<T> {
+    /// Constructs a new `Rc` representing a null pointer.
     #[inline(always)]
     pub fn null() -> Self {
         Self::from_raw(TaggedCnt::null())
@@ -287,6 +417,7 @@ impl<T: GraphNode> Rc<T> {
         }
     }
 
+    /// Constructs a new `Rc` by allocating a new reference-couned object.
     #[inline(always)]
     pub fn new(obj: T) -> Self {
         let ptr = RcInner::alloc(obj, 1);
@@ -296,6 +427,12 @@ impl<T: GraphNode> Rc<T> {
         }
     }
 
+    /// Constructs multiple [`Rc`]s that point to the same object,
+    /// which is allocated as a new reference-counted object.
+    ///
+    /// This method is more efficient than calling [`Rc::new`] once and cloning multiple times
+    /// because it is sufficient to set the reference counter only once, avoiding expensive
+    /// read-modify-write operations.
     #[inline(always)]
     pub fn new_many<const N: usize>(obj: T) -> [Self; N] {
         let ptr = RcInner::alloc(obj, N as _);
@@ -305,6 +442,12 @@ impl<T: GraphNode> Rc<T> {
         })
     }
 
+    /// Constructs an iterator that produces the [`Rc`]s that point to the same object,
+    /// which is allocated as a new reference-counted object.
+    ///
+    /// This method is more efficient than calling [`Rc::new`] once and cloning multiple times
+    /// because it is sufficient to set the reference counter only once, avoiding expensive
+    /// read-modify-write operations.
     #[inline(always)]
     pub fn new_many_iter(obj: T, count: usize) -> NewRcIter<T> {
         let ptr = RcInner::alloc(obj, count as _);
@@ -314,6 +457,11 @@ impl<T: GraphNode> Rc<T> {
         }
     }
 
+    /// Constructs multiple [`Weak`]s that point to the current object.
+    ///
+    /// This method is more efficient than calling [`Rc::downgrade`] multiple times
+    /// because it is sufficient to set the reference counter only once, avoiding expensive
+    /// read-modify-write operations.
     #[inline]
     pub fn weak_many<const N: usize>(&self) -> [Weak<T>; N] {
         if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
@@ -322,11 +470,14 @@ impl<T: GraphNode> Rc<T> {
         array::from_fn(|_| Weak::null())
     }
 
+    /// Returns the tag stored within the pointer.
     #[inline(always)]
     pub fn tag(&self) -> usize {
         self.ptr.tag()
     }
 
+    /// Returns the same pointer, but tagged with `tag`. `tag` is truncated to be fit into the
+    /// unused bits of the pointer to `T`.
     #[inline(always)]
     pub fn with_tag(mut self, tag: usize) -> Self {
         self.ptr = self.ptr.with_tag(tag);
@@ -341,6 +492,11 @@ impl<T: GraphNode> Rc<T> {
         new_ptr
     }
 
+    /// Consumes this pointer and release a strong reference count it was owning.
+    ///
+    /// This method is more efficient than just `Drop`ing the pointer. The `Drop` method
+    /// checks whether the current thread is pinned and pin the thread if it is not.
+    /// However, this method skips that procedure as it already requires `Cs` as an argument.
     #[inline]
     pub fn finalize(self, cs: &Cs) {
         unsafe {
@@ -351,6 +507,7 @@ impl<T: GraphNode> Rc<T> {
         forget(self);
     }
 
+    /// Creates a [`Weak`] pointer by incrementing the weak reference counter.
     #[inline]
     pub fn downgrade(&self) -> Weak<T> {
         unsafe {
@@ -362,11 +519,16 @@ impl<T: GraphNode> Rc<T> {
         Weak::null()
     }
 
+    /// Creates a [`Snapshot`] pointer to the same object.
     #[inline]
     pub fn as_snapshot<'g>(&self, cs: &'g Cs) -> Snapshot<'g, T> {
         Snapshot::from_raw(self.ptr, cs)
     }
 
+    /// Dereferences the pointer and returns an immutable reference.
+    ///
+    /// It does not check whether the pointer is null.
+    ///
     /// # Safety
     ///
     /// The pointer must be a valid memory location to dereference.
@@ -375,6 +537,10 @@ impl<T: GraphNode> Rc<T> {
         self.as_ptr().deref().data()
     }
 
+    /// Dereferences the pointer and returns a mutable reference.
+    ///
+    /// It does not check whether the pointer is null.
+    ///
     /// # Safety
     ///
     /// The pointer must be a valid memory location to dereference and
@@ -384,6 +550,7 @@ impl<T: GraphNode> Rc<T> {
         self.as_ptr().deref_mut().data_mut()
     }
 
+    /// Dereferences the pointer and returns an immutable reference if it is not null.
     #[inline]
     pub fn as_ref(&self) -> Option<&T> {
         if self.as_ptr().is_null() {
@@ -393,6 +560,8 @@ impl<T: GraphNode> Rc<T> {
         }
     }
 
+    /// Dereferences the pointer and returns a mutable reference if it is not null.
+    ///
     /// # Safety
     ///
     /// Other threads must not have references to the object.
@@ -431,6 +600,9 @@ impl<T: GraphNode> PartialEq for Rc<T> {
     }
 }
 
+/// An iterator generating [`Rc`] pointers to the same and newly allocated object.
+///
+/// See [`Rc::new_many_iter`] for the purpose of this iterator.
 pub struct NewRcIter<T: GraphNode> {
     remain: usize,
     ptr: TaggedCnt<T>,
@@ -454,8 +626,12 @@ impl<T: GraphNode> Iterator for NewRcIter<T> {
 }
 
 impl<T: GraphNode> NewRcIter<T> {
+    /// Aborts generating [`Rc`]s.
+    ///
+    /// It decreases the strong reference counter as the remaining number of [`Rc`]s that are not
+    /// generated yet.
     #[inline]
-    pub fn halt(self, cs: &Cs) {
+    pub fn abort(self, cs: &Cs) {
         if self.remain > 0 {
             unsafe {
                 RcInner::decrement_strong(self.ptr.as_raw(), self.remain as _, Some(cs));
@@ -476,6 +652,11 @@ impl<T: GraphNode> Drop for NewRcIter<T> {
     }
 }
 
+/// A local pointer protected by the backend EBR.
+///
+/// Unlike [`Rc`] pointer, This pointer does not own a strong reference count by itself.
+/// Instead, it prevents the destruction of the pointer by the coarse-grained protection that EBR
+/// provides. This pointer is valid for use only during the lifetime of EBR guard `'g`.
 pub struct Snapshot<'g, T> {
     acquired: TaggedCnt<T>,
     _marker: PhantomData<&'g T>,
@@ -490,6 +671,7 @@ impl<'g, T> Clone for Snapshot<'g, T> {
 impl<'g, T> Copy for Snapshot<'g, T> {}
 
 impl<'g, T: GraphNode> Snapshot<'g, T> {
+    /// Creates an [`Rc`] pointer by incrementing the strong reference counter.
     #[inline]
     pub fn upgrade(self) -> Rc<T> {
         let rc = Rc {
@@ -504,6 +686,7 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
         rc
     }
 
+    /// Creates a `Weak` pointer by incrementing the weak reference counter.
     #[inline]
     pub fn downgrade(self) -> Weak<T> {
         let weak = Weak::from_raw(self.as_ptr());
@@ -511,11 +694,14 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
         weak
     }
 
+    /// Returns the tag stored within the pointer.
     #[inline(always)]
     pub fn tag(self) -> usize {
         self.as_ptr().tag()
     }
 
+    /// Returns the same pointer, but tagged with `tag`. `tag` is truncated to be fit into the
+    /// unused bits of the pointer to `T`.
     #[inline]
     pub fn with_tag(self, tag: usize) -> Self {
         let mut result = self;
@@ -523,6 +709,10 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
         result
     }
 
+    /// Dereferences the pointer and returns an immutable reference.
+    ///
+    /// It does not check whether the pointer is null.
+    ///
     /// # Safety
     ///
     /// The pointer must be a valid memory location to dereference.
@@ -531,6 +721,10 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
         self.as_ptr().deref().data()
     }
 
+    /// Dereferences the pointer and returns a mutable reference.
+    ///
+    /// It does not check whether the pointer is null.
+    ///
     /// # Safety
     ///
     /// The pointer must be a valid memory location to dereference and
@@ -540,6 +734,7 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
         self.as_ptr().deref_mut().data_mut()
     }
 
+    /// Dereferences the pointer and returns an immutable reference if it is not null.
     #[inline]
     pub fn as_ref(self) -> Option<&'g T> {
         if self.as_ptr().is_null() {
@@ -549,6 +744,8 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
         }
     }
 
+    /// Dereferences the pointer and returns a mutable reference if it is not null.
+    ///
     /// # Safety
     ///
     /// Other threads must not have references to the object.
@@ -563,6 +760,7 @@ impl<'g, T: GraphNode> Snapshot<'g, T> {
 }
 
 impl<'g, T> Snapshot<'g, T> {
+    /// Constructs a new `Snapshot` representing a null pointer.
     #[inline(always)]
     pub fn null() -> Self {
         Self {
@@ -608,6 +806,7 @@ impl<'g, T> Pointer<T> for Snapshot<'g, T> {
     }
 }
 
+/// A trait for smart pointers that prevent destruction of inner objects.
 pub trait StrongPtr<T>: Pointer<T> {
     const OWNS_REF_COUNT: bool;
 

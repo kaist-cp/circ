@@ -7,7 +7,7 @@ use super::guard::Cs;
 use super::internal::{Global, Local};
 use super::Epoch;
 
-/// An epoch-based garbage collector.
+/// A garbage collector based on *epoch-based reclamation* (EBR).
 pub struct Collector {
     pub(crate) global: Arc<Global>,
 }
