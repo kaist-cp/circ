@@ -374,7 +374,7 @@ unsafe fn dispose_general_node<T: GraphNode>(
     // old enough, `modu.le` may return false.
     if depth == 0 || modu.le(node_epoch as _, curr_epoch as isize - 3) {
         // The current node is immediately reclaimable.
-        outgoings.append(&mut rc.data_mut().pop_outgoings());
+        rc.data_mut().pop_outgoings(&mut outgoings);
         unsafe {
             ManuallyDrop::drop(&mut rc.storage);
             if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {

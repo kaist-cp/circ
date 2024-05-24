@@ -10,8 +10,8 @@ struct Node<K, V> {
 }
 
 impl<K, V> GraphNode for Node<K, V> {
-    fn pop_outgoings(&mut self) -> Vec<Rc<Self>> {
-        vec![self.next.take()]
+    fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>) {
+        out.push(self.next.take())
     }
 }
 

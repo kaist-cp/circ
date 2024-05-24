@@ -43,12 +43,12 @@ struct Node {
 // This trait enables the *immediate recursive destruction* strategy, a novel optimization
 // provided by CIRC (see the `Theoretical Introduction` section below).
 //
-// Implementation is straightforward: simply return outgoing `Rc` pointers in the node.
+// Implementation is straightforward: simply append outgoing `Rc` pointers to `out`.
 // Notably, it remains safe even if the `pop_outgoings` method is not implemented correctly
 // (e.g., returning fewer pointers than it actually has).
 impl GraphNode for Node {
-    fn pop_outgoings(&mut self) -> Vec<Rc<Self>> {
-        vec![self.next.take()]
+    fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>) {
+        out.push(self.next.take());
     }
 }
 

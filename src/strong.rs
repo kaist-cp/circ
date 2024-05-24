@@ -30,8 +30,8 @@ use crate::{Pointer, RcInner, TaggedCnt, Weak};
 /// }
 ///
 /// impl GraphNode for ListNode {
-///     fn pop_outgoings(&mut self) -> Vec<Rc<Self>> {
-///         vec![self.next.take()]
+///     fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>) {
+///         out.push(self.next.take());
 ///     }
 /// }
 ///
@@ -43,21 +43,21 @@ use crate::{Pointer, RcInner, TaggedCnt, Weak};
 /// }
 ///
 /// impl GraphNode for TreeNode {
-///     fn pop_outgoings(&mut self) -> Vec<Rc<Self>> {
-///         vec![self.left.take(), self.right.take()]
+///     fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>) {
+///         out.push(self.left.take());
+///         out.push(self.right.take());
 ///     }
 /// }
 /// ```
 pub trait GraphNode: Sized {
-    /// Returns [`Rc`]s in this node.
+    /// Takes all `Rc`s in the object and appends them to `out`.
     ///
     /// This method is called by the CIRC algorithm just before an object is destructed.
     ///
-    /// Its implementation is straightforward: simply return outgoing `Rc` pointers in the node.
     /// It may be convinient to use [`AtomicRc::take`] because it provides
     /// a mutable reference to the node. Additionally, it remains safe even if this
     /// method is not implemented correctly (e.g., returning fewer pointers than it actually has).
-    fn pop_outgoings(&mut self) -> Vec<Rc<Self>>;
+    fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>);
 }
 
 impl<T> Tagged<RcInner<T>> {
