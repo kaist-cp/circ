@@ -80,6 +80,28 @@ pub struct CompareExchangeErrorRc<'g, T, P> {
     pub current: Snapshot<'g, T>,
 }
 
+/// A result of successful [`AtomicRc::compare_exchange_tag`].
+///
+/// It returns the ownership of the pointer which was given as a parameter `expected`.
+pub struct CompareExchangeTagOkRc<'g, T, P> {
+    /// The previous pointer value that was inside the atomic pointer.
+    pub previous: Snapshot<'g, T>,
+    /// The `expected` which was given as a parameter of [`AtomicRc::compare_exchange_tag`].
+    pub expected: P,
+}
+
+/// A result of unsuccessful [`AtomicRc::compare_exchange_tag`].
+///
+/// It returns the ownership of the pointer which was given as a parameter `expected`.
+pub struct CompareExchangeTagErrorRc<'g, T, P> {
+    /// The current pointer value inside the atomic pointer.
+    pub current: Snapshot<'g, T>,
+    /// The `desired` pointer to be written on a successful [`AtomicRc::compare_exchange_tag`].
+    pub desired: Snapshot<'g, T>,
+    /// The `expected` which was given as a parameter of [`AtomicRc::compare_exchange_tag`].
+    pub expected: P,
+}
+
 /// A atomically mutable field that contains an [`Rc<T>`].
 ///
 /// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
@@ -290,6 +312,7 @@ impl<T: GraphNode> AtomicRc<T> {
     /// The return value is a result indicating whether the desired pointer was written.
     /// On success the pointer that was in this `AtomicRc` is returned.
     /// On failure the actual current value and a desired pointer to write are returned.
+    /// For both cases, the ownership of `expected` is returned by a dedicated field.
     ///
     /// This method takes two [`Ordering`] arguments to describe the memory
     /// ordering of this operation. `success` describes the required ordering for the
@@ -300,28 +323,36 @@ impl<T: GraphNode> AtomicRc<T> {
     /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
     /// and must be equivalent to or weaker than the success ordering.
     #[inline]
-    pub fn compare_exchange_tag<'g>(
+    pub fn compare_exchange_tag<'g, S: StrongPtr<T>>(
         &self,
-        expected: impl StrongPtr<T>,
+        expected: S,
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
         cs: &'g Cs,
-    ) -> Result<TaggedCnt<T>, CompareExchangeErrorRc<'g, T, TaggedCnt<T>>> {
-        let mut expected = expected.as_ptr();
-        let desired = expected.with_tag(desired_tag).with_timestamp();
+    ) -> Result<CompareExchangeTagOkRc<'g, T, S>, CompareExchangeTagErrorRc<'g, T, S>> {
+        let mut expected_raw = expected.as_ptr();
+        let desired_raw = expected_raw.with_tag(desired_tag).with_timestamp();
         loop {
             match self
                 .link
-                .compare_exchange(expected, desired, success, failure)
+                .compare_exchange(expected_raw, desired_raw, success, failure)
             {
-                Ok(current) => return Ok(current),
+                Ok(current) => {
+                    return Ok(CompareExchangeTagOkRc {
+                        previous: Snapshot::from_raw(current, cs),
+                        expected,
+                    })
+                }
                 Err(current) => {
-                    if current.with_high_tag(0) == expected.with_high_tag(0) {
-                        expected = current;
+                    if current.with_high_tag(0) == expected_raw.with_high_tag(0) {
+                        expected_raw = current;
                     } else {
-                        let current = Snapshot::from_raw(current, cs);
-                        return Err(CompareExchangeErrorRc { desired, current });
+                        return Err(CompareExchangeTagErrorRc {
+                            desired: Snapshot::from_raw(desired_raw, cs),
+                            current: Snapshot::from_raw(current, cs),
+                            expected,
+                        });
                     }
                 }
             }

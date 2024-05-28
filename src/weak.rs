@@ -20,6 +20,28 @@ pub struct CompareExchangeErrorWeak<T, P> {
     pub current: TaggedCnt<T>,
 }
 
+/// A result of successful [`AtomicWeak::compare_exchange_tag`].
+///
+/// It returns the ownership of the pointer which was given as a parameter `expected`.
+pub struct CompareExchangeTagOkWeak<T, P> {
+    /// The previous pointer value that was inside the atomic pointer.
+    pub previous: TaggedCnt<T>,
+    /// The `expected` which was given as a parameter of [`AtomicWeak::compare_exchange_tag`].
+    pub expected: P,
+}
+
+/// A result of unsuccessful [`AtomicWeak::compare_exchange_tag`].
+///
+/// It returns the ownership of the pointer which was given as a parameter `expected`.
+pub struct CompareExchangeTagErrorWeak<T, P> {
+    /// The current pointer value inside the atomic pointer.
+    pub current: TaggedCnt<T>,
+    /// The `desired` pointer to be written on a successful [`AtomicWeak::compare_exchange_tag`].
+    pub desired: TaggedCnt<T>,
+    /// The `expected` which was given as a parameter of [`AtomicWeak::compare_exchange_tag`].
+    pub expected: P,
+}
+
 /// A atomically mutable field that contains an [`Weak<T>`].
 ///
 /// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
@@ -201,6 +223,7 @@ impl<T> AtomicWeak<T> {
     /// The return value is a result indicating whether the desired pointer was written.
     /// On success the pointer that was in this `AtomicWeak` is returned.
     /// On failure the actual current value and `desired` are returned.
+    /// For both cases, the ownership of `expected` is returned by a dedicated field.
     ///
     /// This method takes two [`Ordering`] arguments to describe the memory
     /// ordering of this operation. `success` describes the required ordering for the
@@ -211,21 +234,25 @@ impl<T> AtomicWeak<T> {
     /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
     /// and must be equivalent to or weaker than the success ordering.
     #[inline]
-    pub fn compare_exchange_tag(
+    pub fn compare_exchange_tag<P: Pointer<T>>(
         &self,
-        expected: impl Pointer<T>,
+        expected: P,
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
         _: &Cs,
-    ) -> Result<TaggedCnt<T>, CompareExchangeErrorWeak<T, TaggedCnt<T>>> {
+    ) -> Result<CompareExchangeTagOkWeak<T, P>, CompareExchangeTagErrorWeak<T, P>> {
         let desired = expected.as_ptr().with_tag(desired_tag);
         match self
             .link
             .compare_exchange(expected.as_ptr(), desired, success, failure)
         {
-            Ok(current) => Ok(current),
-            Err(current) => Err(CompareExchangeErrorWeak { desired, current }),
+            Ok(previous) => Ok(CompareExchangeTagOkWeak { previous, expected }),
+            Err(current) => Err(CompareExchangeTagErrorWeak {
+                current,
+                desired,
+                expected,
+            }),
         }
     }
 }
