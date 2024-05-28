@@ -360,14 +360,9 @@ impl<T: GraphNode> AtomicRc<T> {
     }
 
     /// Takes an underlying [`Rc`] from this [`AtomicRc`], leaving a null pointer.
-    ///
-    /// It is more efficient than [`AtomicRc::swap`] because it calls an atomic store operation
-    /// which is cheaper than read-modify-write operations.
     #[inline]
     pub fn take(&mut self) -> Rc<T> {
-        let ptr = self.link.load(Relaxed);
-        self.link.store(Tagged::null(), Relaxed);
-        Rc::from_raw(ptr)
+        Rc::from_raw(core::mem::take(self.link.get_mut()))
     }
 }
 
