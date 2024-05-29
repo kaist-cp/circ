@@ -298,7 +298,7 @@ impl<'g, T: 'g, C: IsElement<T>> Iterator for Iter<'g, T, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ebr_impl::Collector;
+    use crate::ebr_impl::collector::Collector;
     use crossbeam_utils::thread;
     use std::sync::Barrier;
 

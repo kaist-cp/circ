@@ -57,7 +57,6 @@ mod internal;
 mod pointers;
 mod sync;
 
-pub use collector::Collector;
 pub use default::*;
 pub use epoch::*;
 pub use guard::*;

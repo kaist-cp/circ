@@ -113,7 +113,7 @@ mod tests {
 
     use crossbeam_utils::thread;
 
-    use crate::ebr_impl::{Collector, RawShared};
+    use crate::ebr_impl::{collector::Collector, RawShared};
 
     const NUM_THREADS: usize = 8;
 
