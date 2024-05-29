@@ -270,9 +270,9 @@ impl<T> From<Weak<T>> for AtomicWeak<T> {
 impl<T> Drop for AtomicWeak<T> {
     #[inline(always)]
     fn drop(&mut self) {
-        let ptr = self.link.load(SeqCst);
+        let ptr = (*self.link.get_mut()).as_raw();
         unsafe {
-            if let Some(cnt) = ptr.as_raw().as_mut() {
+            if let Some(cnt) = ptr.as_mut() {
                 RcInner::decrement_weak(cnt, None);
             }
         }

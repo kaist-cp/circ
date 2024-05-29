@@ -4,7 +4,6 @@ use std::{
     mem::{forget, size_of},
     sync::atomic::{AtomicUsize, Ordering},
 };
-use Ordering::*;
 
 use atomic::Atomic;
 use static_assertions::const_assert;
@@ -340,9 +339,9 @@ impl<T: RcObject> AtomicRc<T> {
 impl<T: RcObject> Drop for AtomicRc<T> {
     #[inline(always)]
     fn drop(&mut self) {
+        let ptr = (*self.link.get_mut()).as_raw();
         unsafe {
-            let ptr = self.link.load(Relaxed);
-            if let Some(cnt) = ptr.as_raw().as_mut() {
+            if let Some(cnt) = ptr.as_mut() {
                 RcInner::decrement_strong(cnt, 1, None);
             }
         }
