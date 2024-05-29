@@ -42,7 +42,7 @@ pub struct CompareExchangeTagErrorWeak<T, P> {
     pub expected: P,
 }
 
-/// A atomically mutable field that contains an [`Weak<T>`].
+/// A atomically mutable field that contains a [`Weak<T>`].
 ///
 /// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
 /// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
@@ -88,8 +88,8 @@ impl<T> AtomicWeak<T> {
 
     /// Tries loading a [`Snapshot`] pointer from this `AtomicWeak`.
     ///
-    /// This method checks the strong reference counter of the object and returns the [`Snapshot`]
-    /// pointer if the pointer is a null pointer or the object is not destructed yet.
+    /// Returns `Some` [`Snapshot`] if the pointer is null or the referent is not destructed yet (thus
+    /// being dereferenceable). Otherwise, returns `None`.
     #[inline]
     pub fn load<'g>(&self, guard: &'g Guard) -> Option<Snapshot<'g, T>> {
         loop {

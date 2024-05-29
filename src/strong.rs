@@ -48,14 +48,19 @@ use crate::{Pointer, Raw, RcInner, Weak};
 ///     }
 /// }
 /// ```
+///
+/// # Note
+///
+/// Currenty it supports immediate recursive destruction of single edge type. The edges of the
+/// other types must be deferred (automatically done by the destructors of `Rc` and `AtomicRc`).
 pub trait RcObject: Sized {
-    /// Takes all `Rc`s in the object and appends them to `out`.
+    /// Takes all `Rc`s in the object and adds them to `out`.
+    /// It may be convinient to use [`AtomicRc::take`] for implementing this.
     ///
-    /// This method is called by the CIRC algorithm just before an object is destructed.
+    /// This method is called by CIRC just before the object is destructed.
     ///
-    /// It may be convinient to use [`AtomicRc::take`] because it provides
-    /// a mutable reference to the node. Additionally, it remains safe even if this
-    /// method is not implemented correctly (e.g., returning fewer pointers than it actually has).
+    /// It does not need to take all the edges in the node, because the destructors of `Rc` and
+    /// `AtomicRc` schedule the decrement and destruction anyway.
     fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>);
 }
 
@@ -366,7 +371,7 @@ impl<T: RcObject> From<Rc<T>> for AtomicRc<T> {
     }
 }
 
-/// A smart pointer for reference-counted pointer to an object of type `T`.
+/// A reference-counted pointer to an object of type `T`.
 ///
 /// Unlike [`Snapshot`] pointer, This pointer owns a strong reference count by itself, preventing
 /// reclamation by the backend EBR. When `T` implements [`Send`] and [`Sync`], [`Rc<T>`] also
