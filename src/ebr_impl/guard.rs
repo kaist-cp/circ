@@ -90,7 +90,7 @@ impl Guard {
         }
     }
 
-    /// Restarts (deactivate and reactivate) the critical section.
+    /// Deactivate and reactivate the critical section.
     ///
     /// This method is useful when you don't want delay the advancement of the global epoch by
     /// holding an old epoch. For safety, you should not maintain any guard-based reference across
@@ -98,7 +98,7 @@ impl Guard {
     /// is the only active guard for the current thread.
     ///
     // If this method is called from an [`unprotected`] guard, then the call will be just no-op.
-    pub fn repin(&mut self) {
+    pub fn reactivate(&mut self) {
         if let Some(local) = unsafe { self.local.as_ref() } {
             local.repin();
         }
@@ -114,7 +114,7 @@ impl Guard {
     ///
     // If this method is called from an [`unprotected`] guard, then the passed function is called
     // directly without unpinning the thread.
-    pub fn repin_after<F, R>(&mut self, f: F) -> R
+    pub fn reactivate_after<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce() -> R,
     {

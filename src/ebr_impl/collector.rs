@@ -343,7 +343,7 @@ mod tests {
         }
 
         while DROPS.load(Ordering::Relaxed) < COUNT {
-            guard.repin();
+            guard.reactivate();
             collector.global.collect(&guard);
         }
         assert_eq!(DROPS.load(Ordering::Relaxed), COUNT);
