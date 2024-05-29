@@ -2,7 +2,7 @@
 //! (<https://www.cl.cam.ac.uk/research/srg/netos/papers/2001-caslists.pdf>).
 
 use atomic::Ordering;
-use circ::{AtomicRc, Cs, RcObject, Rc, Snapshot};
+use circ::{AtomicRc, Cs, Rc, RcObject, Snapshot};
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 
