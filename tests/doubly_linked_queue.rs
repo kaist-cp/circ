@@ -3,7 +3,7 @@
 
 use std::sync::atomic::Ordering;
 
-use circ::{AtomicRc, Cs, GraphNode, Pointer, Rc, Snapshot, Weak};
+use circ::{AtomicRc, Cs, RcObject, Pointer, Rc, Snapshot, Weak};
 use crossbeam_utils::CachePadded;
 
 pub struct Output<'g, T> {
@@ -25,8 +25,8 @@ struct Node<T> {
     next: CachePadded<AtomicRc<Node<T>>>,
 }
 
-impl<T> GraphNode for Node<T> {
-    fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>) {
+impl<T> RcObject for Node<T> {
+    fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
         out.push(self.next.take())
     }
 }

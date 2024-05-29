@@ -30,7 +30,7 @@ During an intensive shared object access, frequent reference count updates with 
 More examples with actual data structures can be found in `./tests`.
 
 ```rust
-use circ::{pin, AtomicRc, GraphNode, Rc, Snapshot};
+use circ::{pin, AtomicRc, RcObject, Rc, Snapshot};
 use std::sync::atomic::Ordering::Relaxed;
 
 // A simple singly linked list node.
@@ -39,15 +39,15 @@ struct Node {
     next: AtomicRc<Self>,
 }
 
-// The `GraphNode` trait must be implemented for all reference-counted objects.
+// The `RcObject` trait must be implemented for all reference-counted objects.
 // This trait enables the *immediate recursive destruction* strategy, a novel optimization
 // provided by CIRC (see the `Theoretical Introduction` section below).
 //
 // Implementation is straightforward: simply append outgoing `Rc` pointers to `out`.
-// Notably, it remains safe even if the `pop_outgoings` method is not implemented correctly
+// Notably, it remains safe even if the `pop_edges` method is not implemented correctly
 // (e.g., returning fewer pointers than it actually has).
-impl GraphNode for Node {
-    fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>) {
+impl RcObject for Node {
+    fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
         out.push(self.next.take());
     }
 }

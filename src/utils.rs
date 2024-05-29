@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use std::{mem::ManuallyDrop, sync::atomic::AtomicU64};
 
 use crate::ebr_impl::{global_epoch, pin, Cs, Tagged, HIGH_TAG_WIDTH};
-use crate::GraphNode;
+use crate::RcObject;
 
 pub type TaggedCnt<T> = Tagged<RcInner<T>>;
 
@@ -268,7 +268,7 @@ impl<T> RcInner<T> {
     }
 }
 
-impl<T: GraphNode> RcInner<T> {
+impl<T: RcObject> RcInner<T> {
     #[inline]
     pub(crate) unsafe fn decrement_strong(ptr: *mut Self, count: u32, cs: Option<&Cs>) {
         let epoch = global_epoch();
@@ -329,7 +329,7 @@ impl<T: GraphNode> RcInner<T> {
 }
 
 #[inline]
-unsafe fn dispose<T: GraphNode>(inner: *mut RcInner<T>) {
+unsafe fn dispose<T: RcObject>(inner: *mut RcInner<T>) {
     DISPOSE_COUNTER.with(|counter| {
         let cs = &pin();
         dispose_general_node(inner, 0, counter, cs);
@@ -337,7 +337,7 @@ unsafe fn dispose<T: GraphNode>(inner: *mut RcInner<T>) {
 }
 
 #[inline]
-unsafe fn dispose_general_node<T: GraphNode>(
+unsafe fn dispose_general_node<T: RcObject>(
     ptr: *mut RcInner<T>,
     depth: usize,
     counter: &Cell<usize>,
@@ -374,7 +374,7 @@ unsafe fn dispose_general_node<T: GraphNode>(
     // old enough, `modu.le` may return false.
     if depth == 0 || modu.le(node_epoch as _, curr_epoch as isize - 3) {
         // The current node is immediately reclaimable.
-        rc.data_mut().pop_outgoings(&mut outgoings);
+        rc.data_mut().pop_edges(&mut outgoings);
         unsafe {
             ManuallyDrop::drop(&mut rc.storage);
             if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {

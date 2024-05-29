@@ -2,7 +2,7 @@
 //! (<https://www.cl.cam.ac.uk/research/srg/netos/papers/2001-caslists.pdf>).
 
 use atomic::Ordering;
-use circ::{AtomicRc, Cs, GraphNode, Rc, Snapshot};
+use circ::{AtomicRc, Cs, RcObject, Rc, Snapshot};
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 
@@ -12,8 +12,8 @@ struct Node<K, V> {
     value: V,
 }
 
-impl<K, V> GraphNode for Node<K, V> {
-    fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>) {
+impl<K, V> RcObject for Node<K, V> {
+    fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
         out.push(self.next.take())
     }
 }

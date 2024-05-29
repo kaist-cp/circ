@@ -21,7 +21,7 @@ use crate::{Pointer, RcInner, TaggedCnt, Weak};
 /// # Examples
 ///
 /// ```
-/// use circ::{AtomicRc, GraphNode, Rc};
+/// use circ::{AtomicRc, RcObject, Rc};
 ///
 /// // A simple singly linked list node.
 /// struct ListNode {
@@ -29,8 +29,8 @@ use crate::{Pointer, RcInner, TaggedCnt, Weak};
 ///     next: AtomicRc<Self>,
 /// }
 ///
-/// impl GraphNode for ListNode {
-///     fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>) {
+/// impl RcObject for ListNode {
+///     fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
 ///         out.push(self.next.take());
 ///     }
 /// }
@@ -42,14 +42,14 @@ use crate::{Pointer, RcInner, TaggedCnt, Weak};
 ///     right: AtomicRc<Self>,
 /// }
 ///
-/// impl GraphNode for TreeNode {
-///     fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>) {
+/// impl RcObject for TreeNode {
+///     fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
 ///         out.push(self.left.take());
 ///         out.push(self.right.take());
 ///     }
 /// }
 /// ```
-pub trait GraphNode: Sized {
+pub trait RcObject: Sized {
     /// Takes all `Rc`s in the object and appends them to `out`.
     ///
     /// This method is called by the CIRC algorithm just before an object is destructed.
@@ -57,7 +57,7 @@ pub trait GraphNode: Sized {
     /// It may be convinient to use [`AtomicRc::take`] because it provides
     /// a mutable reference to the node. Additionally, it remains safe even if this
     /// method is not implemented correctly (e.g., returning fewer pointers than it actually has).
-    fn pop_outgoings(&mut self, out: &mut Vec<Rc<Self>>);
+    fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>);
 }
 
 impl<T> Tagged<RcInner<T>> {
@@ -85,13 +85,13 @@ pub struct CompareExchangeErrorRc<'g, T, P> {
 /// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
 /// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
 /// should be less than `(1 << align_of::<T>().trailing_zeros())`.
-pub struct AtomicRc<T: GraphNode> {
+pub struct AtomicRc<T: RcObject> {
     link: Atomic<TaggedCnt<T>>,
     _marker: PhantomData<T>,
 }
 
-unsafe impl<T: GraphNode + Send + Sync> Send for AtomicRc<T> {}
-unsafe impl<T: GraphNode + Send + Sync> Sync for AtomicRc<T> {}
+unsafe impl<T: RcObject + Send + Sync> Send for AtomicRc<T> {}
+unsafe impl<T: RcObject + Send + Sync> Sync for AtomicRc<T> {}
 
 // Ensure that TaggedPtr<T> is 8-byte long,
 // so that lock-free atomic operations are possible.
@@ -99,7 +99,7 @@ const_assert!(Atomic::<TaggedCnt<u8>>::is_lock_free());
 const_assert!(size_of::<TaggedCnt<u8>>() == size_of::<usize>());
 const_assert!(size_of::<Atomic<TaggedCnt<u8>>>() == size_of::<AtomicUsize>());
 
-impl<T: GraphNode> AtomicRc<T> {
+impl<T: RcObject> AtomicRc<T> {
     /// Constructs a new `AtomicRc` by allocating a new reference-couned object.
     #[inline(always)]
     pub fn new(obj: T) -> Self {
@@ -337,7 +337,7 @@ impl<T: GraphNode> AtomicRc<T> {
     }
 }
 
-impl<T: GraphNode> Drop for AtomicRc<T> {
+impl<T: RcObject> Drop for AtomicRc<T> {
     #[inline(always)]
     fn drop(&mut self) {
         unsafe {
@@ -349,14 +349,14 @@ impl<T: GraphNode> Drop for AtomicRc<T> {
     }
 }
 
-impl<T: GraphNode> Default for AtomicRc<T> {
+impl<T: RcObject> Default for AtomicRc<T> {
     #[inline(always)]
     fn default() -> Self {
         Self::null()
     }
 }
 
-impl<T: GraphNode> From<Rc<T>> for AtomicRc<T> {
+impl<T: RcObject> From<Rc<T>> for AtomicRc<T> {
     #[inline]
     fn from(value: Rc<T>) -> Self {
         let ptr = value.into_raw();
@@ -376,15 +376,15 @@ impl<T: GraphNode> From<Rc<T>> for AtomicRc<T> {
 /// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
 /// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
 /// should be less than `(1 << align_of::<T>().trailing_zeros())`.
-pub struct Rc<T: GraphNode> {
+pub struct Rc<T: RcObject> {
     ptr: TaggedCnt<T>,
     _marker: PhantomData<T>,
 }
 
-unsafe impl<T: GraphNode + Send + Sync> Send for Rc<T> {}
-unsafe impl<T: GraphNode + Send + Sync> Sync for Rc<T> {}
+unsafe impl<T: RcObject + Send + Sync> Send for Rc<T> {}
+unsafe impl<T: RcObject + Send + Sync> Sync for Rc<T> {}
 
-impl<T: GraphNode> Clone for Rc<T> {
+impl<T: RcObject> Clone for Rc<T> {
     fn clone(&self) -> Self {
         let rc = Self {
             ptr: self.ptr,
@@ -399,7 +399,7 @@ impl<T: GraphNode> Clone for Rc<T> {
     }
 }
 
-impl<T: GraphNode> Rc<T> {
+impl<T: RcObject> Rc<T> {
     /// Constructs a new `Rc` representing a null pointer.
     #[inline(always)]
     pub fn null() -> Self {
@@ -572,14 +572,14 @@ impl<T: GraphNode> Rc<T> {
     }
 }
 
-impl<T: GraphNode> Default for Rc<T> {
+impl<T: RcObject> Default for Rc<T> {
     #[inline]
     fn default() -> Self {
         Self::null()
     }
 }
 
-impl<T: GraphNode> Drop for Rc<T> {
+impl<T: RcObject> Drop for Rc<T> {
     #[inline(always)]
     fn drop(&mut self) {
         unsafe {
@@ -590,7 +590,7 @@ impl<T: GraphNode> Drop for Rc<T> {
     }
 }
 
-impl<T: GraphNode> PartialEq for Rc<T> {
+impl<T: RcObject> PartialEq for Rc<T> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.ptr == other.ptr
@@ -600,12 +600,12 @@ impl<T: GraphNode> PartialEq for Rc<T> {
 /// An iterator generating [`Rc`] pointers to the same and newly allocated object.
 ///
 /// See [`Rc::new_many_iter`] for the purpose of this iterator.
-pub struct NewRcIter<T: GraphNode> {
+pub struct NewRcIter<T: RcObject> {
     remain: usize,
     ptr: TaggedCnt<T>,
 }
 
-impl<T: GraphNode> Iterator for NewRcIter<T> {
+impl<T: RcObject> Iterator for NewRcIter<T> {
     type Item = Rc<T>;
 
     #[inline]
@@ -622,7 +622,7 @@ impl<T: GraphNode> Iterator for NewRcIter<T> {
     }
 }
 
-impl<T: GraphNode> NewRcIter<T> {
+impl<T: RcObject> NewRcIter<T> {
     /// Aborts generating [`Rc`]s.
     ///
     /// It decreases the strong reference counter as the remaining number of [`Rc`]s that are not
@@ -638,7 +638,7 @@ impl<T: GraphNode> NewRcIter<T> {
     }
 }
 
-impl<T: GraphNode> Drop for NewRcIter<T> {
+impl<T: RcObject> Drop for NewRcIter<T> {
     #[inline]
     fn drop(&mut self) {
         if self.remain > 0 {
@@ -667,7 +667,7 @@ impl<'g, T> Clone for Snapshot<'g, T> {
 
 impl<'g, T> Copy for Snapshot<'g, T> {}
 
-impl<'g, T: GraphNode> Snapshot<'g, T> {
+impl<'g, T: RcObject> Snapshot<'g, T> {
     /// Creates an [`Rc`] pointer by incrementing the strong reference counter.
     #[inline]
     pub fn upgrade(self) -> Rc<T> {
@@ -775,7 +775,7 @@ impl<'g, T> Snapshot<'g, T> {
     }
 }
 
-impl<'g, T: GraphNode> Default for Snapshot<'g, T> {
+impl<'g, T: RcObject> Default for Snapshot<'g, T> {
     #[inline]
     fn default() -> Self {
         Self::null()
@@ -789,7 +789,7 @@ impl<'g, T> PartialEq for Snapshot<'g, T> {
     }
 }
 
-impl<T: GraphNode> Pointer<T> for Rc<T> {
+impl<T: RcObject> Pointer<T> for Rc<T> {
     #[inline]
     fn as_ptr(&self) -> TaggedCnt<T> {
         self.ptr
