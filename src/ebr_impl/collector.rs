@@ -78,16 +78,17 @@ impl LocalHandle {
         unsafe { (*self.local).pin() }
     }
 
-    /*
     /// Returns `true` if the handle is pinned.
+    #[cfg(test)]
     #[inline]
-    pub fn is_pinned(&self) -> bool {
+    pub(crate) fn is_pinned(&self) -> bool {
         unsafe { (*self.local).is_pinned() }
     }
 
+    /*
     /// Returns the `Collector` associated with this handle.
     #[inline]
-    pub fn collector(&self) -> &Collector {
+    pub(crate) fn collector(&self) -> &Collector {
         unsafe { (*self.local).collector() }
     }
     */
