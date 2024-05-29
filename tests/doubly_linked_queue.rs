@@ -1,3 +1,6 @@
+//! Implementation of Ramalhete and Correia's "DoubleLink" lock-free queue
+//! (<https://concurrencyfreaks.blogspot.com/2017/01/doublelink-low-overhead-lock-free-queue.html>).
+
 use std::sync::atomic::Ordering;
 
 use circ::{AtomicRc, Cs, GraphNode, Pointer, Rc, Snapshot, Weak};
@@ -46,12 +49,12 @@ impl<T> Node<T> {
     }
 }
 
-pub struct DoubleLink<T: Sync + Send> {
+pub struct DLQueue<T: Sync + Send> {
     head: CachePadded<AtomicRc<Node<T>>>,
     tail: CachePadded<AtomicRc<Node<T>>>,
 }
 
-impl<T: Sync + Send> DoubleLink<T> {
+impl<T: Sync + Send> DLQueue<T> {
     #[inline]
     pub fn new() -> Self {
         let sentinel = Rc::new(Node::sentinel());
@@ -131,13 +134,13 @@ impl<T: Sync + Send> DoubleLink<T> {
 mod test {
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::DoubleLink;
+    use super::DLQueue;
     use circ::pin;
     use crossbeam_utils::thread::scope;
 
     #[test]
     fn simple() {
-        let queue = DoubleLink::new();
+        let queue = DLQueue::new();
         let cs = &pin();
         assert!(queue.dequeue(cs).is_none());
         queue.enqueue(1, cs);
@@ -154,7 +157,7 @@ mod test {
         const THREADS: usize = 100;
         const ELEMENTS_PER_THREAD: usize = 10000;
 
-        let queue = DoubleLink::new();
+        let queue = DLQueue::new();
         let mut found = Vec::new();
         found.resize_with(THREADS * ELEMENTS_PER_THREAD, || AtomicU32::new(0));
 

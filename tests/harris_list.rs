@@ -1,3 +1,6 @@
+//! Concurrent map based on Harris's lock-free linked list
+//! (<https://www.cl.cam.ac.uk/research/srg/netos/papers/2001-caslists.pdf>).
+
 use atomic::Ordering;
 use circ::{AtomicRc, Cs, GraphNode, Rc, Snapshot};
 
@@ -15,11 +18,11 @@ impl<K, V> GraphNode for Node<K, V> {
     }
 }
 
-struct List<K, V> {
+struct ListMap<K, V> {
     head: AtomicRc<Node<K, V>>,
 }
 
-impl<K, V> Default for List<K, V>
+impl<K, V> Default for ListMap<K, V>
 where
     K: Ord + Default,
     V: Default,
@@ -172,14 +175,14 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
     }
 }
 
-impl<K, V> List<K, V>
+impl<K, V> ListMap<K, V>
 where
     K: Ord + Default,
     V: Default,
 {
     /// Creates a new list.
     pub fn new() -> Self {
-        List {
+        ListMap {
             head: AtomicRc::new(Node::head()),
         }
     }
@@ -255,7 +258,7 @@ fn smoke() {
     const THREADS: i32 = 30;
     const ELEMENTS_PER_THREADS: i32 = 1000;
 
-    let map = &List::new();
+    let map = &ListMap::new();
 
     thread::scope(|s| {
         for t in 0..THREADS {
