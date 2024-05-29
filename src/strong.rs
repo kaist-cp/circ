@@ -125,14 +125,14 @@ impl<T: RcObject> AtomicRc<T> {
     /// Loads a raw tagged pointer from this `AtomicRc`.
     ///
     /// This method takes an [`Ordering`] argument which describes the memory ordering of this
-    /// operation. Possible values are [`SeqCst`], [`Acquire`] and [`Relaxed`].
+    /// operation. Possible values are `SeqCst`, `Acquire` and `Relaxed`.
     ///
     /// Note that the returned pointer cannot be dereferenced safely, becuase it is protected by
     /// neither a SMR nor a reference count. To dereference, use [`AtomicRc::load`] method instead.
     ///
     /// # Panics
     ///
-    /// Panics if `order` is [`Release`] or [`AcqRel`].
+    /// Panics if `order` is `Release` or `AcqRel`.
     #[inline]
     pub fn load_raw(&self, order: Ordering) -> Raw<T> {
         self.link.load(order)
@@ -141,11 +141,11 @@ impl<T: RcObject> AtomicRc<T> {
     /// Loads a [`Snapshot`] pointer from this `AtomicRc`.
     ///
     /// This method takes an [`Ordering`] argument which describes the memory ordering of this
-    /// operation. Possible values are [`SeqCst`], [`Acquire`] and [`Relaxed`].
+    /// operation. Possible values are `SeqCst`, `Acquire` and `Relaxed`.
     ///
     /// # Panics
     ///
-    /// Panics if `order` is [`Release`] or [`AcqRel`].
+    /// Panics if `order` is `Release` or `AcqRel`.
     #[inline]
     pub fn load<'g>(&self, order: Ordering, guard: &'g Guard) -> Snapshot<'g, T> {
         Snapshot::from_raw(self.load_raw(order), guard)
@@ -193,9 +193,9 @@ impl<T: RcObject> AtomicRc<T> {
     /// ordering of this operation. `success` describes the required ordering for the
     /// read-modify-write operation that takes place if the comparison with `expected` succeeds.
     /// `failure` describes the required ordering for the load operation that takes place when
-    /// the comparison fails. Using [`Acquire`] as success ordering makes the store part
-    /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
-    /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
+    /// the comparison fails. Using `Acquire` as success ordering makes the store part
+    /// of this operation `Relaxed`, and using `Release` makes the successful load
+    /// `Relaxed`. The failure ordering can only be `SeqCst`, `Acquire` or `Relaxed`
     /// and must be equivalent to or weaker than the success ordering.
     #[inline(always)]
     pub fn compare_exchange<'g>(
@@ -245,9 +245,9 @@ impl<T: RcObject> AtomicRc<T> {
     /// ordering of this operation. `success` describes the required ordering for the
     /// read-modify-write operation that takes place if the comparison with `expected` succeeds.
     /// `failure` describes the required ordering for the load operation that takes place when
-    /// the comparison fails. Using [`Acquire`] as success ordering makes the store part
-    /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
-    /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
+    /// the comparison fails. Using `Acquire` as success ordering makes the store part
+    /// of this operation `Relaxed`, and using `Release` makes the successful load
+    /// `Relaxed`. The failure ordering can only be `SeqCst`, `Acquire` or `Relaxed`
     /// and must be equivalent to or weaker than the success ordering.
     #[inline(always)]
     pub fn compare_exchange_weak<'g>(
@@ -299,9 +299,9 @@ impl<T: RcObject> AtomicRc<T> {
     /// ordering of this operation. `success` describes the required ordering for the
     /// read-modify-write operation that takes place if the comparison with `expected` succeeds.
     /// `failure` describes the required ordering for the load operation that takes place when
-    /// the comparison fails. Using [`Acquire`] as success ordering makes the store part
-    /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
-    /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
+    /// the comparison fails. Using `Acquire` as success ordering makes the store part
+    /// of this operation `Relaxed`, and using `Release` makes the successful load
+    /// `Relaxed`. The failure ordering can only be `SeqCst`, `Acquire` or `Relaxed`
     /// and must be equivalent to or weaker than the success ordering.
     #[inline]
     pub fn compare_exchange_tag<'g>(

@@ -78,6 +78,7 @@ impl LocalHandle {
         unsafe { (*self.local).pin() }
     }
 
+    /*
     /// Returns `true` if the handle is pinned.
     #[inline]
     pub fn is_pinned(&self) -> bool {
@@ -89,6 +90,7 @@ impl LocalHandle {
     pub fn collector(&self) -> &Collector {
         unsafe { (*self.local).collector() }
     }
+    */
 }
 
 impl Drop for LocalHandle {

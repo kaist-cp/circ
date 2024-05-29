@@ -333,11 +333,13 @@ impl Local {
         unsafe { &*self.collector.get() }
     }
 
+    /*
     /// Returns `true` if the current participant is pinned.
     #[inline]
     pub(crate) fn is_pinned(&self) -> bool {
         self.guard_count.get() > 0
     }
+    */
 
     /// Adds `deferred` to the thread-local bag.
     ///

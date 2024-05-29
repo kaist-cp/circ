@@ -3,7 +3,7 @@ use core::mem;
 
 use scopeguard::defer;
 
-use super::collector::Collector;
+// use super::collector::Collector;
 use super::deferred::Deferred;
 use super::internal::Local;
 use super::RawShared;
@@ -83,36 +83,37 @@ impl Guard {
     /// soon as possible. Flushing will make sure it is residing in in the global cache, so that
     /// any thread has a chance of taking the function and executing it.
     ///
-    /// If this method is called from an [`unprotected`] guard, it is a no-op (nothing happens).
+    // If this method is called from an [`unprotected`] guard, it is a no-op (nothing happens).
     pub fn flush(&self) {
         if let Some(local) = unsafe { self.local.as_ref() } {
             local.flush(self);
         }
     }
 
-    /// Unpins and then immediately re-pins the thread.
+    /// Restarts (deactivate and reactivate) the critical section.
     ///
     /// This method is useful when you don't want delay the advancement of the global epoch by
     /// holding an old epoch. For safety, you should not maintain any guard-based reference across
     /// the call (the latter is enforced by `&mut self`). The thread will only be repinned if this
     /// is the only active guard for the current thread.
     ///
-    /// If this method is called from an [`unprotected`] guard, then the call will be just no-op.
+    // If this method is called from an [`unprotected`] guard, then the call will be just no-op.
     pub fn repin(&mut self) {
         if let Some(local) = unsafe { self.local.as_ref() } {
             local.repin();
         }
     }
 
-    /// Temporarily unpins the thread, executes the given function and then re-pins the thread.
+    /// Temporarily deactivate the critical section, executes the given function and then
+    /// reactivates the critical section.
     ///
     /// This method is useful when you need to perform a long-running operation (e.g. sleeping)
     /// and don't need to maintain any guard-based reference across the call (the latter is enforced
     /// by `&mut self`). The thread will only be unpinned if this is the only active guard for the
     /// current thread.
     ///
-    /// If this method is called from an [`unprotected`] guard, then the passed function is called
-    /// directly without unpinning the thread.
+    // If this method is called from an [`unprotected`] guard, then the passed function is called
+    // directly without unpinning the thread.
     pub fn repin_after<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce() -> R,
@@ -135,6 +136,7 @@ impl Guard {
         f()
     }
 
+    /*
     /// Returns the `Collector` associated with this guard.
     ///
     /// This method is useful when you need to ensure that all guards used with
@@ -144,6 +146,7 @@ impl Guard {
     pub fn collector(&self) -> Option<&Collector> {
         unsafe { self.local.as_ref().map(|local| local.collector()) }
     }
+    */
 
     /// Increases the manual collection counter, and perform collection if the counter reaches
     /// the threshold which is set by `set_manual_collection_interval`.
