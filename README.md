@@ -30,7 +30,7 @@ During an intensive shared object access, frequent reference count updates with 
 More examples with actual data structures can be found in `./tests`.
 
 ```rust
-use circ::{pin, AtomicRc, GraphNode, Rc};
+use circ::{pin, AtomicRc, GraphNode, Rc, Snapshot};
 use std::sync::atomic::Ordering::Relaxed;
 
 // A simple singly linked list node.
@@ -72,7 +72,7 @@ let new_second = Rc::new(Node {
     next: AtomicRc::null(),
 });
 let result = first.as_ref().unwrap().next.compare_exchange(
-    Rc::null(),
+    Snapshot::null(),
     new_second,
     Relaxed,
     Relaxed,

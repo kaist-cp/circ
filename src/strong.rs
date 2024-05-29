@@ -80,28 +80,6 @@ pub struct CompareExchangeErrorRc<'g, T, P> {
     pub current: Snapshot<'g, T>,
 }
 
-/// A result of successful [`AtomicRc::compare_exchange_tag`].
-///
-/// It returns the ownership of the pointer which was given as a parameter `expected`.
-pub struct CompareExchangeTagOkRc<'g, T, P> {
-    /// The previous pointer value that was inside the atomic pointer.
-    pub previous: Snapshot<'g, T>,
-    /// The `expected` which was given as a parameter of [`AtomicRc::compare_exchange_tag`].
-    pub expected: P,
-}
-
-/// A result of unsuccessful [`AtomicRc::compare_exchange_tag`].
-///
-/// It returns the ownership of the pointer which was given as a parameter `expected`.
-pub struct CompareExchangeTagErrorRc<'g, T, P> {
-    /// The current pointer value inside the atomic pointer.
-    pub current: Snapshot<'g, T>,
-    /// The `desired` pointer to be written on a successful [`AtomicRc::compare_exchange_tag`].
-    pub desired: Snapshot<'g, T>,
-    /// The `expected` which was given as a parameter of [`AtomicRc::compare_exchange_tag`].
-    pub expected: P,
-}
-
 /// A atomically mutable field that contains an [`Rc<T>`].
 ///
 /// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
@@ -169,13 +147,12 @@ impl<T: GraphNode> AtomicRc<T> {
         Snapshot::from_raw(self.load_raw(order), cs)
     }
 
-    /// Stores a [`Snapshot`] or [`Rc`] pointer into this `AtomicRc`.
+    /// Stores an [`Rc`] pointer into this `AtomicRc`.
     ///
     /// This method takes an [`Ordering`] argument which describes the memory ordering of
     /// this operation.
     #[inline]
-    pub fn store(&self, ptr: impl StrongPtr<T>, order: Ordering, cs: &Cs) {
-        let ptr = ptr.into_rc();
+    pub fn store(&self, ptr: Rc<T>, order: Ordering, cs: &Cs) {
         let new_ptr = ptr.as_ptr();
         let old_ptr = self.link.swap(new_ptr.with_timestamp(), order);
         // Skip decrementing a strong count of the inserted pointer.
@@ -201,7 +178,7 @@ impl<T: GraphNode> AtomicRc<T> {
     }
 
     /// Stores the [`Rc`] pointer `desired` into the atomic pointer if the current value is the
-    /// same as `expected` (either [`Snapshot`] or [`Rc`]). The tag is also taken into account,
+    /// same as `expected` [`Snapshot`] pointer. The tag is also taken into account,
     /// so two pointers to the same object, but with different tags, will not be considered equal.
     ///
     /// The return value is a result indicating whether the desired pointer was written.
@@ -219,7 +196,7 @@ impl<T: GraphNode> AtomicRc<T> {
     #[inline(always)]
     pub fn compare_exchange<'g>(
         &self,
-        expected: impl StrongPtr<T>,
+        expected: Snapshot<'g, T>,
         desired: Rc<T>,
         success: Ordering,
         failure: Ordering,
@@ -251,7 +228,7 @@ impl<T: GraphNode> AtomicRc<T> {
     }
 
     /// Stores the [`Rc`] pointer `desired` into the atomic pointer if the current value is the
-    /// same as `expected` (either [`Snapshot`] or [`Rc`]). The tag is also taken into account,
+    /// same as `expected` [`Snapshot`] pointer. The tag is also taken into account,
     /// so two pointers to the same object, but with different tags, will not be considered equal.
     ///
     /// Unlike [`AtomicRc::compare_exchange`], this method is allowed to spuriously fail
@@ -271,7 +248,7 @@ impl<T: GraphNode> AtomicRc<T> {
     #[inline(always)]
     pub fn compare_exchange_weak<'g>(
         &self,
-        expected: impl StrongPtr<T>,
+        expected: Snapshot<'g, T>,
         desired: Rc<T>,
         success: Ordering,
         failure: Ordering,
@@ -303,7 +280,7 @@ impl<T: GraphNode> AtomicRc<T> {
     }
 
     /// Overwrites the tag value `desired_tag` to the atomic pointer if the current value is the
-    /// same as `expected` (either [`Snapshot`] or [`Rc`]). The tag is also taken into account,
+    /// same as `expected` [`Snapshot`] pointer. The tag is also taken into account,
     /// so two pointers to the same object, but with different tags, will not be considered equal.
     ///
     /// If the `desired_tag` uses more bits than the unused least significant bits of the pointer
@@ -323,14 +300,14 @@ impl<T: GraphNode> AtomicRc<T> {
     /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
     /// and must be equivalent to or weaker than the success ordering.
     #[inline]
-    pub fn compare_exchange_tag<'g, S: StrongPtr<T>>(
+    pub fn compare_exchange_tag<'g>(
         &self,
-        expected: S,
+        expected: Snapshot<'g, T>,
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
         cs: &'g Cs,
-    ) -> Result<CompareExchangeTagOkRc<'g, T, S>, CompareExchangeTagErrorRc<'g, T, S>> {
+    ) -> Result<Snapshot<'g, T>, CompareExchangeErrorRc<'g, T, Snapshot<'g, T>>> {
         let mut expected_raw = expected.as_ptr();
         let desired_raw = expected_raw.with_tag(desired_tag).with_timestamp();
         loop {
@@ -338,20 +315,14 @@ impl<T: GraphNode> AtomicRc<T> {
                 .link
                 .compare_exchange(expected_raw, desired_raw, success, failure)
             {
-                Ok(current) => {
-                    return Ok(CompareExchangeTagOkRc {
-                        previous: Snapshot::from_raw(current, cs),
-                        expected,
-                    })
-                }
+                Ok(current) => return Ok(Snapshot::from_raw(current, cs)),
                 Err(current) => {
                     if current.with_high_tag(0) == expected_raw.with_high_tag(0) {
                         expected_raw = current;
                     } else {
-                        return Err(CompareExchangeTagErrorRc {
+                        return Err(CompareExchangeErrorRc {
                             desired: Snapshot::from_raw(desired_raw, cs),
                             current: Snapshot::from_raw(current, cs),
-                            expected,
                         });
                     }
                 }
@@ -830,37 +801,4 @@ impl<'g, T> Pointer<T> for Snapshot<'g, T> {
     fn as_ptr(&self) -> TaggedCnt<T> {
         self.acquired
     }
-}
-
-/// A trait for smart pointers that prevent destruction of inner objects.
-pub trait StrongPtr<T>: Pointer<T> {
-    const OWNS_REF_COUNT: bool;
-
-    /// Consumes `self` and constructs a [`Rc`] pointing to the same object.
-    ///
-    /// If `self` is already [`Rc`], it will not touch the reference count.
-    #[inline]
-    fn into_rc(self) -> Rc<T>
-    where
-        T: GraphNode,
-        Self: Sized,
-    {
-        let rc = Rc::from_raw(self.as_ptr());
-        if Self::OWNS_REF_COUNT {
-            // As we have a reference count already, we don't have to do anything, but
-            // prevent calling a destructor which decrements it.
-            forget(self);
-        } else if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
-            cnt.increment_strong();
-        }
-        rc
-    }
-}
-
-impl<T: GraphNode> StrongPtr<T> for Rc<T> {
-    const OWNS_REF_COUNT: bool = true;
-}
-
-impl<'g, T> StrongPtr<T> for Snapshot<'g, T> {
-    const OWNS_REF_COUNT: bool = false;
 }
