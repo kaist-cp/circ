@@ -8,7 +8,7 @@ use atomic::Atomic;
 use static_assertions::const_assert;
 
 use crate::ebr_impl::{Guard, Tagged};
-use crate::{Pointer, RcInner, Snapshot, TaggedCnt};
+use crate::{Pointer, Raw, RcInner, Snapshot};
 
 /// A result of unsuccessful [`AtomicWeak::compare_exchange`].
 ///
@@ -17,7 +17,7 @@ pub struct CompareExchangeErrorWeak<T, P> {
     /// The `desired` which was given as a parameter of [`AtomicWeak::compare_exchange`].
     pub desired: P,
     /// The current pointer value inside the atomic pointer.
-    pub current: TaggedCnt<T>,
+    pub current: Raw<T>,
 }
 
 /// A result of successful [`AtomicWeak::compare_exchange_tag`].
@@ -25,7 +25,7 @@ pub struct CompareExchangeErrorWeak<T, P> {
 /// It returns the ownership of the pointer which was given as a parameter `expected`.
 pub struct CompareExchangeTagOkWeak<T, P> {
     /// The previous pointer value that was inside the atomic pointer.
-    pub previous: TaggedCnt<T>,
+    pub previous: Raw<T>,
     /// The `expected` which was given as a parameter of [`AtomicWeak::compare_exchange_tag`].
     pub expected: P,
 }
@@ -35,9 +35,9 @@ pub struct CompareExchangeTagOkWeak<T, P> {
 /// It returns the ownership of the pointer which was given as a parameter `expected`.
 pub struct CompareExchangeTagErrorWeak<T, P> {
     /// The current pointer value inside the atomic pointer.
-    pub current: TaggedCnt<T>,
+    pub current: Raw<T>,
     /// The `desired` pointer to be written on a successful [`AtomicWeak::compare_exchange_tag`].
-    pub desired: TaggedCnt<T>,
+    pub desired: Raw<T>,
     /// The `expected` which was given as a parameter of [`AtomicWeak::compare_exchange_tag`].
     pub expected: P,
 }
@@ -48,7 +48,7 @@ pub struct CompareExchangeTagErrorWeak<T, P> {
 /// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
 /// should be less than `(1 << align_of::<T>().trailing_zeros())`.
 pub struct AtomicWeak<T> {
-    pub(crate) link: Atomic<TaggedCnt<T>>,
+    pub(crate) link: Atomic<Raw<T>>,
 }
 
 unsafe impl<T: Send + Sync> Send for AtomicWeak<T> {}
@@ -56,9 +56,9 @@ unsafe impl<T: Send + Sync> Sync for AtomicWeak<T> {}
 
 // Ensure that TaggedPtr<T> is 8-byte long,
 // so that lock-free atomic operations are possible.
-const_assert!(Atomic::<TaggedCnt<u8>>::is_lock_free());
-const_assert!(size_of::<TaggedCnt<u8>>() == size_of::<usize>());
-const_assert!(size_of::<Atomic<TaggedCnt<u8>>>() == size_of::<AtomicUsize>());
+const_assert!(Atomic::<Raw<u8>>::is_lock_free());
+const_assert!(size_of::<Raw<u8>>() == size_of::<usize>());
+const_assert!(size_of::<Atomic<Raw<u8>>>() == size_of::<AtomicUsize>());
 
 impl<T> AtomicWeak<T> {
     /// Constructs a new `AtomicWeak` containing a null pointer.
@@ -82,7 +82,7 @@ impl<T> AtomicWeak<T> {
     ///
     /// Panics if `order` is [`Release`] or [`AcqRel`].
     #[inline]
-    pub fn load_raw(&self, order: Ordering) -> TaggedCnt<T> {
+    pub fn load_raw(&self, order: Ordering) -> Raw<T> {
         self.link.load(order)
     }
 
@@ -299,7 +299,7 @@ impl<T> Default for AtomicWeak<T> {
 /// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
 /// should be less than `(1 << align_of::<T>().trailing_zeros())`.
 pub struct Weak<T> {
-    ptr: TaggedCnt<T>,
+    ptr: Raw<T>,
 }
 
 unsafe impl<T: Send + Sync> Send for Weak<T> {}
@@ -321,11 +321,11 @@ impl<T> Weak<T> {
     /// Constructs a new `Rc` representing a null pointer.
     #[inline(always)]
     pub fn null() -> Self {
-        Self::from_raw(TaggedCnt::null())
+        Self::from_raw(Raw::null())
     }
 
     #[inline(always)]
-    pub(crate) fn from_raw(ptr: TaggedCnt<T>) -> Self {
+    pub(crate) fn from_raw(ptr: Raw<T>) -> Self {
         Self { ptr }
     }
 
@@ -357,7 +357,7 @@ impl<T> Weak<T> {
     }
 
     #[inline]
-    pub(crate) fn into_raw(self) -> TaggedCnt<T> {
+    pub(crate) fn into_raw(self) -> Raw<T> {
         let new_ptr = self.as_ptr();
         // Skip decrementing the ref count.
         forget(self);
@@ -392,7 +392,7 @@ impl<T> PartialEq for Weak<T> {
 
 impl<T> Pointer<T> for Weak<T> {
     #[inline]
-    fn as_ptr(&self) -> TaggedCnt<T> {
+    fn as_ptr(&self) -> Raw<T> {
         self.ptr
     }
 }

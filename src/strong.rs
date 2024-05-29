@@ -9,7 +9,7 @@ use atomic::Atomic;
 use static_assertions::const_assert;
 
 use crate::ebr_impl::{global_epoch, Guard, Tagged};
-use crate::{Pointer, RcInner, TaggedCnt, Weak};
+use crate::{Pointer, Raw, RcInner, Weak};
 
 /// A common trait for reference-counted object types.
 ///
@@ -85,7 +85,7 @@ pub struct CompareExchangeErrorRc<'g, T, P> {
 /// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
 /// should be less than `(1 << align_of::<T>().trailing_zeros())`.
 pub struct AtomicRc<T: RcObject> {
-    link: Atomic<TaggedCnt<T>>,
+    link: Atomic<Raw<T>>,
     _marker: PhantomData<T>,
 }
 
@@ -94,9 +94,9 @@ unsafe impl<T: RcObject + Send + Sync> Sync for AtomicRc<T> {}
 
 // Ensure that TaggedPtr<T> is 8-byte long,
 // so that lock-free atomic operations are possible.
-const_assert!(Atomic::<TaggedCnt<u8>>::is_lock_free());
-const_assert!(size_of::<TaggedCnt<u8>>() == size_of::<usize>());
-const_assert!(size_of::<Atomic<TaggedCnt<u8>>>() == size_of::<AtomicUsize>());
+const_assert!(Atomic::<Raw<u8>>::is_lock_free());
+const_assert!(size_of::<Raw<u8>>() == size_of::<usize>());
+const_assert!(size_of::<Atomic<Raw<u8>>>() == size_of::<AtomicUsize>());
 
 impl<T: RcObject> AtomicRc<T> {
     /// Constructs a new `AtomicRc` by allocating a new reference-couned object.
@@ -129,7 +129,7 @@ impl<T: RcObject> AtomicRc<T> {
     ///
     /// Panics if `order` is [`Release`] or [`AcqRel`].
     #[inline]
-    pub fn load_raw(&self, order: Ordering) -> TaggedCnt<T> {
+    pub fn load_raw(&self, order: Ordering) -> Raw<T> {
         self.link.load(order)
     }
 
@@ -376,7 +376,7 @@ impl<T: RcObject> From<Rc<T>> for AtomicRc<T> {
 /// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
 /// should be less than `(1 << align_of::<T>().trailing_zeros())`.
 pub struct Rc<T: RcObject> {
-    ptr: TaggedCnt<T>,
+    ptr: Raw<T>,
     _marker: PhantomData<T>,
 }
 
@@ -402,11 +402,11 @@ impl<T: RcObject> Rc<T> {
     /// Constructs a new `Rc` representing a null pointer.
     #[inline(always)]
     pub fn null() -> Self {
-        Self::from_raw(TaggedCnt::null())
+        Self::from_raw(Raw::null())
     }
 
     #[inline(always)]
-    pub(crate) fn from_raw(ptr: TaggedCnt<T>) -> Self {
+    pub(crate) fn from_raw(ptr: Raw<T>) -> Self {
         Self {
             ptr,
             _marker: PhantomData,
@@ -418,7 +418,7 @@ impl<T: RcObject> Rc<T> {
     pub fn new(obj: T) -> Self {
         let ptr = RcInner::alloc(obj, 1);
         Self {
-            ptr: TaggedCnt::from(ptr),
+            ptr: Raw::from(ptr),
             _marker: PhantomData,
         }
     }
@@ -433,7 +433,7 @@ impl<T: RcObject> Rc<T> {
     pub fn new_many<const N: usize>(obj: T) -> [Self; N] {
         let ptr = RcInner::alloc(obj, N as _);
         [(); N].map(|_| Self {
-            ptr: TaggedCnt::from(ptr),
+            ptr: Raw::from(ptr),
             _marker: PhantomData,
         })
     }
@@ -449,7 +449,7 @@ impl<T: RcObject> Rc<T> {
         let ptr = RcInner::alloc(obj, count as _);
         NewRcIter {
             remain: count,
-            ptr: TaggedCnt::from(ptr),
+            ptr: Raw::from(ptr),
         }
     }
 
@@ -481,7 +481,7 @@ impl<T: RcObject> Rc<T> {
     }
 
     #[inline]
-    pub(crate) fn into_raw(self) -> TaggedCnt<T> {
+    pub(crate) fn into_raw(self) -> Raw<T> {
         let new_ptr = self.as_ptr();
         // Skip decrementing the ref count.
         forget(self);
@@ -601,7 +601,7 @@ impl<T: RcObject> PartialEq for Rc<T> {
 /// See [`Rc::new_many_iter`] for the purpose of this iterator.
 pub struct NewRcIter<T: RcObject> {
     remain: usize,
-    ptr: TaggedCnt<T>,
+    ptr: Raw<T>,
 }
 
 impl<T: RcObject> Iterator for NewRcIter<T> {
@@ -654,7 +654,7 @@ impl<T: RcObject> Drop for NewRcIter<T> {
 /// Instead, it prevents the destruction of the pointer by the coarse-grained protection that EBR
 /// provides. This pointer is valid for use only during the lifetime of EBR guard `'g`.
 pub struct Snapshot<'g, T> {
-    acquired: TaggedCnt<T>,
+    acquired: Raw<T>,
     _marker: PhantomData<&'g T>,
 }
 
@@ -766,7 +766,7 @@ impl<'g, T> Snapshot<'g, T> {
     }
 
     #[inline]
-    pub(crate) fn from_raw(acquired: TaggedCnt<T>, _: &'g Guard) -> Self {
+    pub(crate) fn from_raw(acquired: Raw<T>, _: &'g Guard) -> Self {
         Self {
             acquired,
             _marker: PhantomData,
@@ -790,14 +790,14 @@ impl<'g, T> PartialEq for Snapshot<'g, T> {
 
 impl<T: RcObject> Pointer<T> for Rc<T> {
     #[inline]
-    fn as_ptr(&self) -> TaggedCnt<T> {
+    fn as_ptr(&self) -> Raw<T> {
         self.ptr
     }
 }
 
 impl<'g, T> Pointer<T> for Snapshot<'g, T> {
     #[inline]
-    fn as_ptr(&self) -> TaggedCnt<T> {
+    fn as_ptr(&self) -> Raw<T> {
         self.acquired
     }
 }

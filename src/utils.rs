@@ -5,12 +5,13 @@ use std::{mem::ManuallyDrop, sync::atomic::AtomicU64};
 use crate::ebr_impl::{cs, global_epoch, Guard, Tagged, HIGH_TAG_WIDTH};
 use crate::RcObject;
 
-pub type TaggedCnt<T> = Tagged<RcInner<T>>;
+/// Raw pointer to a reference counted object. Allows tagging.
+pub type Raw<T> = Tagged<RcInner<T>>;
 
 /// A trait for all smart pointer types.
 pub trait Pointer<T> {
     /// Returns an underlying raw tagged pointer.
-    fn as_ptr(&self) -> TaggedCnt<T>;
+    fn as_ptr(&self) -> Raw<T>;
 
     /// Returns `true` if the pointer is null.
     fn is_null(&self) -> bool {
