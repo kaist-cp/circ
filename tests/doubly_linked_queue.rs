@@ -46,9 +46,6 @@ impl<T> Node<T> {
     }
 }
 
-unsafe impl<T: Sync> Sync for Node<T> {}
-unsafe impl<T: Sync> Send for Node<T> {}
-
 pub struct DoubleLink<T: Sync + Send> {
     head: CachePadded<AtomicRc<Node<T>>>,
     tail: CachePadded<AtomicRc<Node<T>>>,
