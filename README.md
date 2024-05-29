@@ -19,7 +19,7 @@ circ = "0.1"
 
 ### Efficient Access with `Snapshot<'g, T>`
 
-During an intensive shared object access, frequent reference count updates with `Rc<T>` and `AtomicRc<T>` can cause overhead. `Snapshot<'g, T>` addresses this by offering a local reference protected by an EBR guard with a lifetime `'g`. It avoids reference count updates during construction and destruction. Use an RAII-style EBR guard `Cs` created with `pin` function for safe access during its lifetime. As a trade-off, `Snapshot<'g, T>` cannot be sent across threads. The send the shared pointer, upgrade it to `Rc<T>` using the `upgrade` method.
+During an intensive shared object access, frequent reference count updates with `Rc<T>` and `AtomicRc<T>` can cause overhead. `Snapshot<'g, T>` addresses this by offering a local reference protected by an EBR guard with a lifetime `'g`. It avoids reference count updates during construction and destruction. Use an RAII-style EBR guard `guard` created with `cs` function for safe access during its lifetime. As a trade-off, `Snapshot<'g, T>` cannot be sent across threads. The send the shared pointer, upgrade it to `Rc<T>` using the `upgrade` method.
 
 ### Managing Cyclic Structures with Weak References
 
@@ -30,7 +30,7 @@ During an intensive shared object access, frequent reference count updates with 
 More examples with actual data structures can be found in `./tests`.
 
 ```rust
-use circ::{pin, AtomicRc, RcObject, Rc, Snapshot};
+use circ::{cs, AtomicRc, RcObject, Rc, Snapshot};
 use std::sync::atomic::Ordering::Relaxed;
 
 // A simple singly linked list node.
@@ -61,9 +61,9 @@ let root = AtomicRc::new(Node {
 
 // Before accessing the shared objects, the thread must be pinned by the EBR backend.
 // This enables us to efficiently access the objects without updating the reference counters.
-let cs = pin();
+let guard = cs();
 // Load the first node as a `Snapshot` pointer.
-let first = root.load(Relaxed, &cs);
+let first = root.load(Relaxed, &guard);
 assert_eq!(first.as_ref().map(|node| &node.item), Some(&1));
 
 // Let's install a new node after the first node.
@@ -76,27 +76,27 @@ let result = first.as_ref().unwrap().next.compare_exchange(
     new_second,
     Relaxed,
     Relaxed,
-    &cs,
+    &guard,
 );
 assert!(result.is_ok());
 
 // Let's check the secondary node is properly installed.
 let second = first
     .as_ref()
-    .map(|node| node.next.load(Relaxed, &cs))
+    .map(|node| node.next.load(Relaxed, &guard))
     .unwrap();
 assert_eq!(second.as_ref().map(|node| &node.item), Some(&2));
 
 // Those `Snapshot` pointers we have created so far (`first` and `second`) are able to be accessed
-// only within the scope of `Cs`. After the `Cs` is dropped, further accesses to the `Snapshot`
+// only within the scope of `guard`. After the `guard` is dropped, further accesses to the `Snapshot`
 // pointers are forbidden by the Rust type system.
 //
 // If we want to keep pointers alive, we need to `upgrade` them to `Rc`s.
 // `Rc` is independent to the EBR backend, and owns the reference count by itself.
 let first_rc = first.upgrade();
-drop(cs);
+drop(guard);
 
-// Even after the `Cs` is dropped, `first_rc` is still accessible.
+// Even after the `guard` is dropped, `first_rc` is still accessible.
 assert_eq!(first_rc.as_ref().map(|node| &node.item), Some(&1));
 ```
 
