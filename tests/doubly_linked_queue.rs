@@ -25,7 +25,7 @@ struct Node<T> {
     next: CachePadded<AtomicRc<Node<T>>>,
 }
 
-impl<T> RcObject for Node<T> {
+unsafe impl<T> RcObject for Node<T> {
     fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
         out.push(self.next.take())
     }

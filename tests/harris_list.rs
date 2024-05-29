@@ -12,7 +12,7 @@ struct Node<K, V> {
     value: V,
 }
 
-impl<K, V> RcObject for Node<K, V> {
+unsafe impl<K, V> RcObject for Node<K, V> {
     fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
         out.push(self.next.take())
     }

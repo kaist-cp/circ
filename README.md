@@ -73,7 +73,7 @@ struct Node {
 // The `RcObject` trait must be implemented for all reference-counted objects.
 // This trait enables *immediate recursive destruction*.
 // Implementation is straightforward: simply add outgoing `Rc` pointers to `out`.
-impl RcObject for Node {
+unsafe impl RcObject for Node {
     fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
         out.push(self.next.take());
     }

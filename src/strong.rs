@@ -28,7 +28,7 @@ use crate::{Pointer, Raw, RcInner, Weak};
 ///     next: AtomicRc<Self>,
 /// }
 ///
-/// impl RcObject for ListNode {
+/// unsafe impl RcObject for ListNode {
 ///     fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
 ///         out.push(self.next.take());
 ///     }
@@ -41,7 +41,7 @@ use crate::{Pointer, Raw, RcInner, Weak};
 ///     right: AtomicRc<Self>,
 /// }
 ///
-/// impl RcObject for TreeNode {
+/// unsafe impl RcObject for TreeNode {
 ///     fn pop_edges(&mut self, out: &mut Vec<Rc<Self>>) {
 ///         out.push(self.left.take());
 ///         out.push(self.right.take());
@@ -49,11 +49,16 @@ use crate::{Pointer, Raw, RcInner, Weak};
 /// }
 /// ```
 ///
+/// # Safety
+///
+/// `pop_edges()` should add only the `Rc`s obtained from the given object. If an unrelated `Rc` is
+/// added, its referent can be prematurely reclaimed.
+///
 /// # Note
 ///
 /// Currenty it supports immediate recursive destruction of single edge type. The edges of the
 /// other types must be deferred (automatically done by the destructors of `Rc` and `AtomicRc`).
-pub trait RcObject: Sized {
+pub unsafe trait RcObject: Sized {
     /// Takes all `Rc`s in the object and adds them to `out`.
     /// It may be convinient to use [`AtomicRc::take`] for implementing this.
     ///
