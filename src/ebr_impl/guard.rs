@@ -8,12 +8,12 @@ use super::deferred::Deferred;
 use super::internal::Local;
 use super::RawShared;
 
-/// A RAII-style guard that keeps the current thread pinned.
-pub struct Cs {
+/// A RAII-style guard that keeps the current thread in an EBR critical section.
+pub struct Guard {
     pub(crate) local: *const Local,
 }
 
-impl Cs {
+impl Guard {
     /// Stores a function so that it can be executed at some point after all currently pinned
     /// threads get unpinned.
     ///
@@ -154,7 +154,7 @@ impl Cs {
     }
 }
 
-impl Drop for Cs {
+impl Drop for Guard {
     #[inline]
     fn drop(&mut self) {
         if let Some(local) = unsafe { self.local.as_ref() } {
@@ -163,9 +163,9 @@ impl Drop for Cs {
     }
 }
 
-impl fmt::Debug for Cs {
+impl fmt::Debug for Guard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("Cs { .. }")
+        f.pad("Guard { .. }")
     }
 }
 
@@ -179,8 +179,8 @@ impl fmt::Debug for Cs {
 /// Loading and dereferencing data from atomic shared pointers using this guard is safe only if
 /// the pointers are not being concurrently modified by other threads.
 #[inline]
-pub unsafe fn unprotected() -> Cs {
-    Cs {
+pub unsafe fn unprotected() -> Guard {
+    Guard {
         local: core::ptr::null(),
     }
 }

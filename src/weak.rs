@@ -7,7 +7,7 @@ use Ordering::*;
 use atomic::Atomic;
 use static_assertions::const_assert;
 
-use crate::ebr_impl::{Cs, Tagged};
+use crate::ebr_impl::{Guard, Tagged};
 use crate::{Pointer, RcInner, Snapshot, TaggedCnt};
 
 /// A result of unsuccessful [`AtomicWeak::compare_exchange`].
@@ -91,12 +91,12 @@ impl<T> AtomicWeak<T> {
     /// This method checks the strong reference counter of the object and returns the [`Snapshot`]
     /// pointer if the pointer is a null pointer or the object is not destructed yet.
     #[inline]
-    pub fn load<'g>(&self, cs: &'g Cs) -> Option<Snapshot<'g, T>> {
+    pub fn load<'g>(&self, guard: &'g Guard) -> Option<Snapshot<'g, T>> {
         loop {
             let acquired = self.load_raw(Acquire);
 
             if acquired.is_null() || unsafe { acquired.deref().non_zero() } {
-                return Some(Snapshot::from_raw(acquired, cs));
+                return Some(Snapshot::from_raw(acquired, guard));
             } else if acquired == self.load_raw(Acquire) {
                 return None;
             }
@@ -108,13 +108,13 @@ impl<T> AtomicWeak<T> {
     /// This method takes an [`Ordering`] argument which describes the memory ordering of
     /// this operation.
     #[inline]
-    pub fn store(&self, ptr: Weak<T>, order: Ordering, cs: &Cs) {
+    pub fn store(&self, ptr: Weak<T>, order: Ordering, guard: &Guard) {
         let new_ptr = ptr.as_ptr();
         forget(ptr);
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
             if let Some(cnt) = old_ptr.as_raw().as_mut() {
-                RcInner::decrement_weak(cnt, Some(cs));
+                RcInner::decrement_weak(cnt, Some(guard));
             }
         }
     }
@@ -154,7 +154,7 @@ impl<T> AtomicWeak<T> {
         desired: Weak<T>,
         success: Ordering,
         failure: Ordering,
-        _: &Cs,
+        _: &Guard,
     ) -> Result<Weak<T>, CompareExchangeErrorWeak<T, Weak<T>>> {
         match self
             .link
@@ -196,7 +196,7 @@ impl<T> AtomicWeak<T> {
         desired: Weak<T>,
         success: Ordering,
         failure: Ordering,
-        _: &Cs,
+        _: &Guard,
     ) -> Result<Weak<T>, CompareExchangeErrorWeak<T, Weak<T>>> {
         match self
             .link
@@ -240,7 +240,7 @@ impl<T> AtomicWeak<T> {
         desired_tag: usize,
         success: Ordering,
         failure: Ordering,
-        _: &Cs,
+        _: &Guard,
     ) -> Result<CompareExchangeTagOkWeak<T, P>, CompareExchangeTagErrorWeak<T, P>> {
         let desired = expected.as_ptr().with_tag(desired_tag);
         match self
@@ -348,12 +348,12 @@ impl<T> Weak<T> {
     /// This method checks the strong reference counter of the object and returns the [`Snapshot`]
     /// pointer if the pointer is a null pointer or the object is not destructed yet.
     #[inline]
-    pub fn as_snapshot<'g>(&self, cs: &'g Cs) -> Option<Snapshot<'g, T>> {
+    pub fn as_snapshot<'g>(&self, guard: &'g Guard) -> Option<Snapshot<'g, T>> {
         let acquired = self.as_ptr();
         if !acquired.is_null() && !unsafe { acquired.deref() }.non_zero() {
             return None;
         }
-        Some(Snapshot::from_raw(acquired, cs))
+        Some(Snapshot::from_raw(acquired, guard))
     }
 
     #[inline]

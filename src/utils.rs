@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::sync::atomic::Ordering;
 use std::{mem::ManuallyDrop, sync::atomic::AtomicU64};
 
-use crate::ebr_impl::{global_epoch, pin, Cs, Tagged, HIGH_TAG_WIDTH};
+use crate::ebr_impl::{cs, global_epoch, Guard, Tagged, HIGH_TAG_WIDTH};
 use crate::RcObject;
 
 pub type TaggedCnt<T> = Tagged<RcInner<T>>;
@@ -24,7 +24,7 @@ trait Deferable {
         F: FnOnce(*mut RcInner<T>);
 }
 
-impl Deferable for Cs {
+impl Deferable for Guard {
     unsafe fn defer_with_inner<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
         F: FnOnce(*mut RcInner<T>),
@@ -34,15 +34,15 @@ impl Deferable for Cs {
     }
 }
 
-impl Deferable for Option<&Cs> {
+impl Deferable for Option<&Guard> {
     unsafe fn defer_with_inner<T, F>(&self, ptr: *mut RcInner<T>, f: F)
     where
         F: FnOnce(*mut RcInner<T>),
     {
-        if let Some(cs) = self {
-            cs.defer_with_inner(ptr, f)
+        if let Some(guard) = self {
+            guard.defer_with_inner(ptr, f)
         } else {
-            pin().defer_with_inner(ptr, f)
+            cs().defer_with_inner(ptr, f)
         }
     }
 }
@@ -243,10 +243,10 @@ impl<T> RcInner<T> {
     }
 
     #[inline]
-    pub(crate) unsafe fn decrement_weak(ptr: *mut Self, cs: Option<&Cs>) {
+    pub(crate) unsafe fn decrement_weak(ptr: *mut Self, guard: Option<&Guard>) {
         debug_assert!(State::from_raw((*ptr).state.load(Ordering::SeqCst)).weak() >= 1);
         if State::from_raw((*ptr).state.fetch_sub(WEAK_COUNT, Ordering::SeqCst)).weak() == 1 {
-            cs.defer_with_inner(ptr, |inner| Self::try_dealloc(inner));
+            guard.defer_with_inner(ptr, |inner| Self::try_dealloc(inner));
         }
     }
 
@@ -270,7 +270,7 @@ impl<T> RcInner<T> {
 
 impl<T: RcObject> RcInner<T> {
     #[inline]
-    pub(crate) unsafe fn decrement_strong(ptr: *mut Self, count: u32, cs: Option<&Cs>) {
+    pub(crate) unsafe fn decrement_strong(ptr: *mut Self, count: u32, guard: Option<&Guard>) {
         let epoch = global_epoch();
         // Should mark the current epoch on the strong count with CAS.
         let hit_zero = loop {
@@ -290,18 +290,18 @@ impl<T: RcObject> RcInner<T> {
             }
         };
 
-        let trigger_recl = |cs: &Cs| {
+        let trigger_recl = |guard: &Guard| {
             if hit_zero {
-                cs.defer_with_inner(ptr, |inner| Self::try_destruct(inner));
+                guard.defer_with_inner(ptr, |inner| Self::try_destruct(inner));
             }
             // Periodically triggers a collection.
-            cs.incr_manual_collection();
+            guard.incr_manual_collection();
         };
 
-        if let Some(cs) = cs {
-            trigger_recl(cs)
+        if let Some(guard) = guard {
+            trigger_recl(guard)
         } else {
-            trigger_recl(&pin())
+            trigger_recl(&cs())
         }
     }
 
@@ -331,8 +331,8 @@ impl<T: RcObject> RcInner<T> {
 #[inline]
 unsafe fn dispose<T: RcObject>(inner: *mut RcInner<T>) {
     DISPOSE_COUNTER.with(|counter| {
-        let cs = &pin();
-        dispose_general_node(inner, 0, counter, cs);
+        let guard = &cs();
+        dispose_general_node(inner, 0, counter, guard);
     });
 }
 
@@ -341,7 +341,7 @@ unsafe fn dispose_general_node<T: RcObject>(
     ptr: *mut RcInner<T>,
     depth: usize,
     counter: &Cell<usize>,
-    cs: &Cs,
+    guard: &Guard,
 ) {
     let rc = match ptr.as_mut() {
         Some(rc) => rc,
@@ -351,14 +351,14 @@ unsafe fn dispose_general_node<T: RcObject>(
     let count = counter.get();
     counter.set(count + 1);
     if count % 128 == 0 {
-        if let Some(local) = cs.local.as_ref() {
+        if let Some(local) = guard.local.as_ref() {
             local.repin_without_collect();
         }
     }
 
     if depth >= 1024 {
         // Prevent a potential stack overflow.
-        cs.defer_with_inner(rc, |rc| RcInner::try_destruct(rc));
+        guard.defer_with_inner(rc, |rc| RcInner::try_destruct(rc));
         return;
     }
 
@@ -378,7 +378,7 @@ unsafe fn dispose_general_node<T: RcObject>(
         unsafe {
             ManuallyDrop::drop(&mut rc.storage);
             if State::from_raw(rc.state.load(Ordering::SeqCst)).weaked() {
-                RcInner::decrement_weak(rc, Some(cs));
+                RcInner::decrement_weak(rc, Some(guard));
             } else {
                 RcInner::dealloc(rc);
             }
@@ -415,11 +415,11 @@ unsafe fn dispose_general_node<T: RcObject>(
 
             // If the reference count hit zero, try dispose it recursively.
             if next_cnt.strong() == 0 {
-                dispose_general_node(next_ptr.as_raw(), depth + 1, counter, cs);
+                dispose_general_node(next_ptr.as_raw(), depth + 1, counter, guard);
             }
         }
     } else {
         // It is likely to be unsafe to reclaim right now.
-        cs.defer_with_inner(rc, |rc| RcInner::try_destruct(rc));
+        guard.defer_with_inner(rc, |rc| RcInner::try_destruct(rc));
     }
 }

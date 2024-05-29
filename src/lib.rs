@@ -5,7 +5,7 @@ mod strong;
 mod utils;
 mod weak;
 
-pub use ebr_impl::{default_collector, pin, unprotected, Collector, Cs};
+pub use ebr_impl::{cs, default_collector, unprotected, Collector, Guard};
 pub use strong::*;
 pub use utils::*;
 pub use weak::*;

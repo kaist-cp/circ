@@ -6,7 +6,7 @@ use core::sync::atomic::AtomicUsize;
 
 use atomic::{Atomic, Ordering};
 
-use super::Cs;
+use super::Guard;
 
 pub struct Tagged<T: ?Sized> {
     ptr: *mut T,
@@ -166,7 +166,7 @@ impl<T> RawAtomic<T> {
         }
     }
 
-    pub fn load<'g>(&self, order: Ordering, _: &'g Cs) -> RawShared<'g, T> {
+    pub fn load<'g>(&self, order: Ordering, _: &'g Guard) -> RawShared<'g, T> {
         RawShared::from(self.inner.load(order))
     }
 
@@ -180,7 +180,7 @@ impl<T> RawAtomic<T> {
         new: RawShared<'g, T>,
         success: Ordering,
         failure: Ordering,
-        _: &'g Cs,
+        _: &'g Guard,
     ) -> Result<RawShared<'g, T>, RawShared<'g, T>> {
         self.inner
             .compare_exchange(current.inner, new.inner, success, failure)
@@ -194,7 +194,7 @@ impl<T> RawAtomic<T> {
         new: RawShared<'g, T>,
         success: Ordering,
         failure: Ordering,
-        _: &'g Cs,
+        _: &'g Guard,
     ) -> Result<RawShared<'g, T>, RawShared<'g, T>> {
         self.inner
             .compare_exchange_weak(current.inner, new.inner, success, failure)
@@ -202,7 +202,7 @@ impl<T> RawAtomic<T> {
             .map_err(RawShared::from)
     }
 
-    pub fn fetch_or<'g>(&self, tag: usize, order: Ordering, _: &'g Cs) -> RawShared<'g, T> {
+    pub fn fetch_or<'g>(&self, tag: usize, order: Ordering, _: &'g Guard) -> RawShared<'g, T> {
         // HACK: The size and alignment of `Atomic<TaggedCnt<T>>` will be same with `AtomicUsize`.
         // The equality of the sizes is checked by `const_assert!`.
         let inner = unsafe { &*(&self.inner as *const _ as *const AtomicUsize) };

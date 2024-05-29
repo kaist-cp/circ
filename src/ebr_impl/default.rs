@@ -5,7 +5,7 @@
 //! destructed on thread exit, which in turn unregisters the thread.
 
 use super::collector::{Collector, LocalHandle};
-use super::guard::Cs;
+use super::guard::Guard;
 use super::sync::once_lock::OnceLock;
 
 fn collector() -> &'static Collector {
@@ -19,9 +19,9 @@ thread_local! {
     static HANDLE: LocalHandle = collector().register();
 }
 
-/// Pins the current thread.
+/// Enters EBR critical section.
 #[inline]
-pub fn pin() -> Cs {
+pub fn cs() -> Guard {
     with_handle(|handle| handle.pin())
 }
 
@@ -56,7 +56,7 @@ mod tests {
         impl Drop for Foo {
             fn drop(&mut self) {
                 // Pin after `HANDLE` has been dropped. This must not panic.
-                super::pin();
+                super::cs();
             }
         }
 
@@ -68,7 +68,7 @@ mod tests {
             scope.spawn(|_| {
                 // Initialize `FOO` and then `HANDLE`.
                 FOO.with(|_| ());
-                super::pin();
+                super::cs();
                 // At thread exit, `HANDLE` gets dropped first and `FOO` second.
             });
         })

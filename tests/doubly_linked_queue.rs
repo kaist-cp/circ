@@ -3,7 +3,7 @@
 
 use std::sync::atomic::Ordering;
 
-use circ::{AtomicRc, Cs, Pointer, Rc, RcObject, Snapshot, Weak};
+use circ::{AtomicRc, Guard, Pointer, Rc, RcObject, Snapshot, Weak};
 use crossbeam_utils::CachePadded;
 
 pub struct Output<'g, T> {
@@ -67,11 +67,11 @@ impl<T: Sync + Send> DLQueue<T> {
     }
 
     #[inline]
-    pub fn enqueue(&self, item: T, cs: &Cs) {
+    pub fn enqueue(&self, item: T, guard: &Guard) {
         let [mut node, sub] = Rc::new_many(Node::new(item));
 
         loop {
-            let ltail = self.tail.load(Ordering::Acquire, cs);
+            let ltail = self.tail.load(Ordering::Acquire, guard);
             unsafe { node.deref_mut() }.prev = ltail.downgrade();
 
             // Try to help the previous enqueue to complete.
@@ -79,23 +79,23 @@ impl<T: Sync + Send> DLQueue<T> {
                 .as_ref()
                 .unwrap()
                 .prev
-                .as_snapshot(cs)
+                .as_snapshot(guard)
                 .and_then(Snapshot::as_ref)
             {
-                if lprev.next.load(Ordering::SeqCst, cs).is_null() {
-                    lprev.next.store(ltail.upgrade(), Ordering::Relaxed, cs);
+                if lprev.next.load(Ordering::SeqCst, guard).is_null() {
+                    lprev.next.store(ltail.upgrade(), Ordering::Relaxed, guard);
                 }
             }
             match self
                 .tail
-                .compare_exchange(ltail, node, Ordering::SeqCst, Ordering::SeqCst, cs)
+                .compare_exchange(ltail, node, Ordering::SeqCst, Ordering::SeqCst, guard)
             {
                 Ok(_) => {
                     ltail
                         .as_ref()
                         .unwrap()
                         .next
-                        .store(sub, Ordering::Release, cs);
+                        .store(sub, Ordering::Release, guard);
                     return;
                 }
                 Err(e) => node = e.desired,
@@ -104,10 +104,10 @@ impl<T: Sync + Send> DLQueue<T> {
     }
 
     #[inline]
-    pub fn dequeue<'g>(&self, cs: &'g Cs) -> Option<Output<'g, T>> {
+    pub fn dequeue<'g>(&self, guard: &'g Guard) -> Option<Output<'g, T>> {
         loop {
-            let lhead = self.head.load(Ordering::Acquire, cs);
-            let lnext = lhead.as_ref().unwrap().next.load(Ordering::Acquire, cs);
+            let lhead = self.head.load(Ordering::Acquire, guard);
+            let lnext = lhead.as_ref().unwrap().next.load(Ordering::Acquire, guard);
             // Check if this queue is empty.
             if lnext.is_null() {
                 return None;
@@ -120,7 +120,7 @@ impl<T: Sync + Send> DLQueue<T> {
                     lnext.upgrade(),
                     Ordering::SeqCst,
                     Ordering::SeqCst,
-                    cs,
+                    guard,
                 )
                 .is_ok()
             {
@@ -135,21 +135,21 @@ mod test {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::DLQueue;
-    use circ::pin;
+    use circ::cs;
     use crossbeam_utils::thread::scope;
 
     #[test]
     fn simple() {
         let queue = DLQueue::new();
-        let cs = &pin();
-        assert!(queue.dequeue(cs).is_none());
-        queue.enqueue(1, cs);
-        queue.enqueue(2, cs);
-        queue.enqueue(3, cs);
-        assert_eq!(*queue.dequeue(cs).unwrap().output(), 1);
-        assert_eq!(*queue.dequeue(cs).unwrap().output(), 2);
-        assert_eq!(*queue.dequeue(cs).unwrap().output(), 3);
-        assert!(queue.dequeue(cs).is_none());
+        let guard = &cs();
+        assert!(queue.dequeue(guard).is_none());
+        queue.enqueue(1, guard);
+        queue.enqueue(2, guard);
+        queue.enqueue(3, guard);
+        assert_eq!(*queue.dequeue(guard).unwrap().output(), 1);
+        assert_eq!(*queue.dequeue(guard).unwrap().output(), 2);
+        assert_eq!(*queue.dequeue(guard).unwrap().output(), 3);
+        assert!(queue.dequeue(guard).is_none());
     }
 
     #[test]
@@ -166,7 +166,7 @@ mod test {
                 let queue = &queue;
                 s.spawn(move |_| {
                     for i in 0..ELEMENTS_PER_THREAD {
-                        queue.enqueue((t * ELEMENTS_PER_THREAD + i).to_string(), &pin());
+                        queue.enqueue((t * ELEMENTS_PER_THREAD + i).to_string(), &cs());
                     }
                 });
             }
@@ -179,7 +179,7 @@ mod test {
                 let found = &found;
                 s.spawn(move |_| {
                     for _ in 0..ELEMENTS_PER_THREAD {
-                        let guard = pin();
+                        let guard = cs();
                         let output = queue.dequeue(&guard).unwrap();
                         let res = output.output();
                         assert_eq!(

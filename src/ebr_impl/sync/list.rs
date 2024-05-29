@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 use crate::ebr_impl::{RawAtomic, RawShared};
 
-use super::super::{unprotected, Cs};
+use super::super::{unprotected, Guard};
 
 /// An entry in a linked list.
 ///
@@ -89,7 +89,7 @@ pub(crate) trait IsElement<T> {
     ///
     /// The caller has to guarantee that the `Entry` is called with was retrieved from an instance
     /// of the element type (`T`).
-    unsafe fn finalize(_: &Entry, _: &Cs);
+    unsafe fn finalize(_: &Entry, _: &Guard);
 }
 
 /// A lock-free, intrusive linked list of type `T`.
@@ -104,7 +104,7 @@ pub(crate) struct List<T, C: IsElement<T> = T> {
 /// An iterator used for retrieving values from the list.
 pub(crate) struct Iter<'g, T, C: IsElement<T>> {
     /// The guard that protects the iteration.
-    guard: &'g Cs,
+    guard: &'g Guard,
 
     /// Pointer from the predecessor to the current entry.
     pred: &'g RawAtomic<Entry>,
@@ -145,7 +145,7 @@ impl Entry {
     /// The entry should be a member of a linked list, and it should not have been deleted.
     /// It should be safe to call `C::finalize` on the entry after the `guard` is dropped, where `C`
     /// is the associated helper for the linked list.
-    pub(crate) unsafe fn delete(&self, guard: &Cs) {
+    pub(crate) unsafe fn delete(&self, guard: &Guard) {
         self.next.fetch_or(1, Release, guard);
     }
 }
@@ -169,7 +169,7 @@ impl<T, C: IsElement<T>> List<T, C> {
     /// - `container` is immovable, e.g. inside an `Owned`
     /// - the same `Entry` is not inserted more than once
     /// - the inserted object will be removed before the list is dropped
-    pub(crate) unsafe fn insert<'g>(&'g self, container: RawShared<'g, T>, guard: &'g Cs) {
+    pub(crate) unsafe fn insert<'g>(&'g self, container: RawShared<'g, T>, guard: &'g Guard) {
         // Insert right after head, i.e. at the beginning of the list.
         let to = &self.head;
         // Get the intrusively stored Entry of the new element to insert.
@@ -204,7 +204,7 @@ impl<T, C: IsElement<T>> List<T, C> {
     /// 2. If an object is deleted during iteration, it may or may not be returned.
     /// 3. The iteration may be aborted when it lost in a race condition. In this case, the winning
     ///    thread will continue to iterate over the same list.
-    pub(crate) fn iter<'g>(&'g self, guard: &'g Cs) -> Iter<'g, T, C> {
+    pub(crate) fn iter<'g>(&'g self, guard: &'g Guard) -> Iter<'g, T, C> {
         Iter {
             guard,
             pred: &self.head,
@@ -311,7 +311,7 @@ mod tests {
             entry
         }
 
-        unsafe fn finalize(entry: &Entry, guard: &Cs) {
+        unsafe fn finalize(entry: &Entry, guard: &Guard) {
             guard.defer_destroy(RawShared::from(Self::element_of(entry) as *const _));
         }
     }
@@ -410,7 +410,7 @@ mod tests {
                     b.wait();
 
                     let handle = collector.register();
-                    let guard: Cs = handle.pin();
+                    let guard: Guard = handle.pin();
                     let mut v = Vec::with_capacity(ITERS);
 
                     for _ in 0..ITERS {
@@ -452,7 +452,7 @@ mod tests {
                     b.wait();
 
                     let handle = collector.register();
-                    let guard: Cs = handle.pin();
+                    let guard: Guard = handle.pin();
                     let mut v = Vec::with_capacity(ITERS);
 
                     for _ in 0..ITERS {

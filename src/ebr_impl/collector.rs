@@ -3,7 +3,7 @@ use core::fmt;
 use core::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use super::guard::Cs;
+use super::guard::Guard;
 use super::internal::{Global, Local};
 use super::Epoch;
 
@@ -74,7 +74,7 @@ pub struct LocalHandle {
 impl LocalHandle {
     /// Pins the handle.
     #[inline]
-    pub fn pin(&self) -> Cs {
+    pub fn pin(&self) -> Guard {
         unsafe { (*self.local).pin() }
     }
 

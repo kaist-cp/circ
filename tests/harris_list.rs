@@ -2,7 +2,7 @@
 //! (<https://www.cl.cam.ac.uk/research/srg/netos/papers/2001-caslists.pdf>).
 
 use atomic::Ordering;
-use circ::{AtomicRc, Cs, Rc, RcObject, Snapshot};
+use circ::{AtomicRc, Guard, Rc, RcObject, Snapshot};
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 
@@ -67,15 +67,15 @@ struct Cursor<'g, K, V> {
 
 impl<'g, K: Ord, V> Cursor<'g, K, V> {
     /// Creates a cursor.
-    fn new(head: &AtomicRc<Node<K, V>>, cs: &'g Cs) -> Self {
-        let prev = head.load(Ordering::Relaxed, cs);
-        let curr = prev.as_ref().unwrap().next.load(Ordering::Acquire, cs);
+    fn new(head: &AtomicRc<Node<K, V>>, guard: &'g Guard) -> Self {
+        let prev = head.load(Ordering::Relaxed, guard);
+        let curr = prev.as_ref().unwrap().next.load(Ordering::Acquire, guard);
         Self { prev, curr }
     }
 
     /// Clean up a chain of logically removed nodes in each traversal.
     #[inline]
-    fn find_harris(&mut self, key: &K, cs: &'g Cs) -> Result<Option<&'g V>, ()> {
+    fn find_harris(&mut self, key: &K, guard: &'g Guard) -> Result<Option<&'g V>, ()> {
         // Finding phase
         // - cursor.curr: first untagged node w/ key >= search key (4)
         // - cursor.prev: the ref of .next in previous untagged node (1 -> 2)
@@ -85,7 +85,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
             let Some(curr_node) = self.curr.as_ref() else {
                 break None;
             };
-            let next = curr_node.next.load(Ordering::Acquire, cs);
+            let next = curr_node.next.load(Ordering::Acquire, guard);
 
             if next.tag() != 0 {
                 // We add a 0 tag here so that `self.curr`s tag is always 0.
@@ -119,7 +119,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
                 self.curr.upgrade(),
                 Ordering::Release,
                 Ordering::Relaxed,
-                cs,
+                guard,
             )
             .map_err(|_| ())?;
 
@@ -128,7 +128,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
 
     /// Inserts a value.
     #[inline]
-    pub fn insert(self, node: Rc<Node<K, V>>, cs: &Cs) -> Result<(), Rc<Node<K, V>>> {
+    pub fn insert(self, node: Rc<Node<K, V>>, guard: &Guard) -> Result<(), Rc<Node<K, V>>> {
         node.as_ref()
             .unwrap()
             .next
@@ -139,7 +139,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
             node,
             Ordering::Release,
             Ordering::Relaxed,
-            cs,
+            guard,
         ) {
             Ok(_) => Ok(()),
             Err(e) => Err(e.desired),
@@ -148,16 +148,16 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
 
     /// removes the current node.
     #[inline]
-    pub fn remove(self, cs: &Cs) -> Result<(), ()> {
+    pub fn remove(self, guard: &Guard) -> Result<(), ()> {
         let curr_node = self.curr.as_ref().unwrap();
 
-        let next = curr_node.next.load(Ordering::Acquire, cs);
+        let next = curr_node.next.load(Ordering::Acquire, guard);
         let e = curr_node.next.compare_exchange_tag(
             next.with_tag(0),
             1,
             Ordering::AcqRel,
             Ordering::Relaxed,
-            cs,
+            guard,
         );
         if e.is_err() {
             return Err(());
@@ -168,7 +168,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
             next.upgrade(),
             Ordering::Release,
             Ordering::Relaxed,
-            cs,
+            guard,
         );
 
         Ok(())
@@ -188,31 +188,32 @@ where
     }
 
     #[inline]
-    fn get<'g, F>(&'g self, key: &K, find: F, cs: &'g Cs) -> (Option<&'g V>, Cursor<'g, K, V>)
+    fn get<'g, F>(&'g self, key: &K, find: F, guard: &'g Guard) -> (Option<&'g V>, Cursor<'g, K, V>)
     where
-        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Cs) -> Result<Option<&'g V>, ()>,
+        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Guard) -> Result<Option<&'g V>, ()>,
     {
         loop {
-            let mut cursor = Cursor::new(&self.head, cs);
-            if let Ok(r) = find(&mut cursor, key, cs) {
+            let mut cursor = Cursor::new(&self.head, guard);
+            if let Ok(r) = find(&mut cursor, key, guard) {
                 return (r, cursor);
             }
         }
     }
 
     #[inline]
-    fn insert<'g, F>(&'g self, key: K, value: V, find: F, cs: &'g Cs) -> Option<&'g V>
+    fn insert<'g, F>(&'g self, key: K, value: V, find: F, guard: &'g Guard) -> Option<&'g V>
     where
-        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Cs) -> Result<Option<&'g V>, ()>,
+        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Guard) -> Result<Option<&'g V>, ()>,
     {
         let mut node = Rc::new(Node::new(key, value));
         loop {
-            let (found, cursor) = self.get(node.as_ref().map(|node| &node.key).unwrap(), &find, cs);
+            let (found, cursor) =
+                self.get(node.as_ref().map(|node| &node.key).unwrap(), &find, guard);
             if found.is_some() {
                 return found;
             }
 
-            match cursor.insert(node, cs) {
+            match cursor.insert(node, guard) {
                 Err(n) => node = n,
                 Ok(()) => return None,
             }
@@ -220,38 +221,38 @@ where
     }
 
     #[inline]
-    fn remove<'g, F>(&'g self, key: &K, find: F, cs: &'g Cs) -> Option<&'g V>
+    fn remove<'g, F>(&'g self, key: &K, find: F, guard: &'g Guard) -> Option<&'g V>
     where
-        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Cs) -> Result<Option<&'g V>, ()>,
+        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Guard) -> Result<Option<&'g V>, ()>,
     {
         loop {
-            let (found, cursor) = self.get(key, &find, cs);
+            let (found, cursor) = self.get(key, &find, guard);
             found?;
 
-            match cursor.remove(cs) {
+            match cursor.remove(guard) {
                 Err(()) => continue,
                 Ok(_) => return found,
             }
         }
     }
 
-    pub fn harris_get<'g>(&'g self, key: &K, cs: &'g Cs) -> Option<&'g V> {
-        self.get(key, Cursor::find_harris, cs).0
+    pub fn harris_get<'g>(&'g self, key: &K, guard: &'g Guard) -> Option<&'g V> {
+        self.get(key, Cursor::find_harris, guard).0
     }
 
-    pub fn harris_insert<'g>(&'g self, key: K, value: V, cs: &'g Cs) -> Option<&'g V> {
-        self.insert(key, value, Cursor::find_harris, cs)
+    pub fn harris_insert<'g>(&'g self, key: K, value: V, guard: &'g Guard) -> Option<&'g V> {
+        self.insert(key, value, Cursor::find_harris, guard)
     }
 
-    pub fn harris_remove<'g>(&'g self, key: &K, cs: &'g Cs) -> Option<&'g V> {
-        self.remove(key, Cursor::find_harris, cs)
+    pub fn harris_remove<'g>(&'g self, key: &K, guard: &'g Guard) -> Option<&'g V> {
+        self.remove(key, Cursor::find_harris, guard)
     }
 }
 
 #[test]
 fn smoke() {
     extern crate rand;
-    use circ::pin;
+    use circ::cs;
     use crossbeam_utils::thread;
     use rand::prelude::*;
 
@@ -268,7 +269,7 @@ fn smoke() {
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
                 for i in keys {
-                    assert!(map.harris_insert(i, i.to_string(), &pin()).is_none());
+                    assert!(map.harris_insert(i, i.to_string(), &cs()).is_none());
                 }
             });
         }
@@ -282,10 +283,10 @@ fn smoke() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let mut cs = pin();
+                let mut guard = cs();
                 for i in keys {
-                    assert_eq!(i.to_string(), *map.harris_remove(&i, &cs).unwrap());
-                    cs = pin();
+                    assert_eq!(i.to_string(), *map.harris_remove(&i, &guard).unwrap());
+                    guard = cs();
                 }
             });
         }
@@ -299,10 +300,10 @@ fn smoke() {
                 let mut keys: Vec<i32> =
                     (0..ELEMENTS_PER_THREADS).map(|k| k * THREADS + t).collect();
                 keys.shuffle(rng);
-                let mut cs = pin();
+                let mut guard = cs();
                 for i in keys {
-                    assert_eq!(i.to_string(), *map.harris_get(&i, &cs).unwrap());
-                    cs = pin();
+                    assert_eq!(i.to_string(), *map.harris_get(&i, &guard).unwrap());
+                    guard = cs();
                 }
             });
         }
