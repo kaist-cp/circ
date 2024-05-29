@@ -95,7 +95,7 @@ impl<T> AtomicWeak<T> {
         loop {
             let acquired = self.load_raw(Acquire);
 
-            if acquired.is_null() || unsafe { acquired.deref().non_zero() } {
+            if acquired.is_null() || unsafe { acquired.deref().is_not_destructed() } {
                 return Some(Snapshot::from_raw(acquired, guard));
             } else if acquired == self.load_raw(Acquire) {
                 return None;
@@ -350,7 +350,7 @@ impl<T> Weak<T> {
     #[inline]
     pub fn as_snapshot<'g>(&self, guard: &'g Guard) -> Option<Snapshot<'g, T>> {
         let acquired = self.as_ptr();
-        if !acquired.is_null() && !unsafe { acquired.deref() }.non_zero() {
+        if !acquired.is_null() && !unsafe { acquired.deref() }.is_not_destructed() {
             return None;
         }
         Some(Snapshot::from_raw(acquired, guard))

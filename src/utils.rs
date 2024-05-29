@@ -251,7 +251,7 @@ impl<T> RcInner<T> {
     }
 
     #[inline]
-    pub(crate) fn non_zero(&self) -> bool {
+    pub(crate) fn is_not_destructed(&self) -> bool {
         let mut old = State::from_raw(self.state.load(Ordering::SeqCst));
         while !old.destructed() && old.strong() == 0 {
             match self.state.compare_exchange(
