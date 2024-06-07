@@ -3,7 +3,6 @@ use std::{
     mem::{forget, size_of},
     sync::atomic::{AtomicUsize, Ordering},
 };
-use Ordering::*;
 
 use atomic::Atomic;
 use static_assertions::const_assert;
@@ -41,11 +40,11 @@ impl<T> AtomicWeak<T> {
     /// Loads a [`WeakSnapshot`] pointer from this `AtomicWeak`.
     ///
     /// This method takes an [`Ordering`] argument which describes the memory ordering of this
-    /// operation. Possible values are [`SeqCst`], [`Acquire`] and [`Relaxed`].
+    /// operation. Possible values are `SeqCst`, `Acquire` and `Relaxed`.
     ///
     /// # Panics
     ///
-    /// Panics if `order` is [`Release`] or [`AcqRel`].
+    /// Panics if `order` is `Release` or `AcqRel`.
     #[inline]
     pub fn load<'g>(&self, order: Ordering, guard: &'g Guard) -> WeakSnapshot<'g, T> {
         WeakSnapshot::from_raw(self.link.load(order), guard)
@@ -91,9 +90,9 @@ impl<T> AtomicWeak<T> {
     /// ordering of this operation. `success` describes the required ordering for the
     /// read-modify-write operation that takes place if the comparison with `expected` succeeds.
     /// `failure` describes the required ordering for the load operation that takes place when
-    /// the comparison fails. Using [`Acquire`] as success ordering makes the store part
-    /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
-    /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
+    /// the comparison fails. Using `Acquire` as success ordering makes the store part
+    /// of this operation `Relaxed`, and using `Release` makes the successful load
+    /// `Relaxed`. The failure ordering can only be `SeqCst`, `Acquire` or `Relaxed`
     /// and must be equivalent to or weaker than the success ordering.
     #[inline(always)]
     pub fn compare_exchange<'g>(
@@ -137,9 +136,9 @@ impl<T> AtomicWeak<T> {
     /// ordering of this operation. `success` describes the required ordering for the
     /// read-modify-write operation that takes place if the comparison with `expected` succeeds.
     /// `failure` describes the required ordering for the load operation that takes place when
-    /// the comparison fails. Using [`Acquire`] as success ordering makes the store part
-    /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
-    /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
+    /// the comparison fails. Using `Acquire` as success ordering makes the store part
+    /// of this operation `Relaxed`, and using `Release` makes the successful load
+    /// `Relaxed`. The failure ordering can only be `SeqCst`, `Acquire` or `Relaxed`
     /// and must be equivalent to or weaker than the success ordering.
     #[inline(always)]
     pub fn compare_exchange_weak<'g>(
@@ -184,9 +183,9 @@ impl<T> AtomicWeak<T> {
     /// ordering of this operation. `success` describes the required ordering for the
     /// read-modify-write operation that takes place if the comparison with `expected` succeeds.
     /// `failure` describes the required ordering for the load operation that takes place when
-    /// the comparison fails. Using [`Acquire`] as success ordering makes the store part
-    /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
-    /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
+    /// the comparison fails. Using `Acquire` as success ordering makes the store part
+    /// of this operation `Relaxed`, and using `Release` makes the successful load
+    /// `Relaxed`. The failure ordering can only be `SeqCst`, `Acquire` or `Relaxed`
     /// and must be equivalent to or weaker than the success ordering.
     #[inline]
     pub fn compare_exchange_tag<'g>(
