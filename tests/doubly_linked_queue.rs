@@ -3,7 +3,7 @@
 
 use std::sync::atomic::Ordering;
 
-use circ::{AtomicRc, Guard, Pointer, Rc, RcObject, Snapshot, Weak};
+use circ::{AtomicRc, Guard, Rc, RcObject, Snapshot, Weak};
 use crossbeam_utils::CachePadded;
 
 pub struct Output<'g, T> {

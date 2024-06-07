@@ -6,18 +6,7 @@ use crate::ebr_impl::{cs, global_epoch, Guard, Tagged, HIGH_TAG_WIDTH};
 use crate::RcObject;
 
 /// Raw pointer to a reference counted object. Allows tagging.
-pub type Raw<T> = Tagged<RcInner<T>>;
-
-/// A trait for all smart pointer types.
-pub trait Pointer<T> {
-    /// Returns an underlying raw tagged pointer.
-    fn as_ptr(&self) -> Raw<T>;
-
-    /// Returns `true` if the pointer is null.
-    fn is_null(&self) -> bool {
-        self.as_ptr().is_null()
-    }
-}
+pub(crate) type Raw<T> = Tagged<RcInner<T>>;
 
 trait Deferable {
     unsafe fn defer_with_inner<T, F>(&self, ptr: *mut RcInner<T>, f: F)
@@ -160,7 +149,7 @@ impl<const WIDTH: u32> Modular<WIDTH> {
 }
 
 /// A reference-counted object of type `T` with an atomic reference counts.
-pub struct RcInner<T> {
+pub(crate) struct RcInner<T> {
     storage: ManuallyDrop<T>,
     state: AtomicU64,
 }

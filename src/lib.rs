@@ -7,5 +7,4 @@ mod weak;
 
 pub use ebr_impl::{cs, Guard};
 pub use strong::*;
-pub use utils::*;
 pub use weak::*;

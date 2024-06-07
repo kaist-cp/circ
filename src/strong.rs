@@ -9,7 +9,8 @@ use atomic::Atomic;
 use static_assertions::const_assert;
 
 use crate::ebr_impl::{global_epoch, Guard, Tagged};
-use crate::{Pointer, Raw, RcInner, Weak, WeakSnapshot};
+use crate::utils::{Raw, RcInner};
+use crate::{Weak, WeakSnapshot};
 
 /// A common trait for reference-counted object types.
 ///
@@ -146,7 +147,7 @@ impl<T: RcObject> AtomicRc<T> {
     /// this operation.
     #[inline]
     pub fn store(&self, ptr: Rc<T>, order: Ordering, guard: &Guard) {
-        let new_ptr = ptr.as_ptr();
+        let new_ptr = ptr.ptr;
         let old_ptr = self.link.swap(new_ptr.with_timestamp(), order);
         // Skip decrementing a strong count of the inserted pointer.
         forget(ptr);
@@ -195,8 +196,8 @@ impl<T: RcObject> AtomicRc<T> {
         failure: Ordering,
         guard: &'g Guard,
     ) -> Result<Rc<T>, CompareExchangeError<Rc<T>, Snapshot<'g, T>>> {
-        let mut expected_ptr = expected.as_ptr();
-        let desired_ptr = desired.as_ptr().with_timestamp();
+        let mut expected_ptr = expected.ptr;
+        let desired_ptr = desired.ptr.with_timestamp();
         loop {
             match self
                 .link
@@ -247,8 +248,8 @@ impl<T: RcObject> AtomicRc<T> {
         failure: Ordering,
         guard: &'g Guard,
     ) -> Result<Rc<T>, CompareExchangeError<Rc<T>, Snapshot<'g, T>>> {
-        let mut expected_ptr = expected.as_ptr();
-        let desired_ptr = desired.as_ptr().with_timestamp();
+        let mut expected_ptr = expected.ptr;
+        let desired_ptr = desired.ptr.with_timestamp();
         loop {
             match self
                 .link
@@ -301,7 +302,7 @@ impl<T: RcObject> AtomicRc<T> {
         failure: Ordering,
         guard: &'g Guard,
     ) -> Result<Snapshot<'g, T>, CompareExchangeError<Snapshot<'g, T>, Snapshot<'g, T>>> {
-        let mut expected_raw = expected.as_ptr();
+        let mut expected_raw = expected.ptr;
         let desired_raw = expected_raw.with_tag(desired_tag).with_timestamp();
         loop {
             match self
@@ -321,6 +322,14 @@ impl<T: RcObject> AtomicRc<T> {
                 }
             }
         }
+    }
+
+    /// Returns a mutable reference to the stored `Rc`.
+    ///
+    /// This is safe because the mutable reference guarantees that no other threads are
+    /// concurrently accessing.
+    pub fn get_mut(&mut self) -> &mut Rc<T> {
+        unsafe { core::mem::transmute(self.link.get_mut()) }
     }
 
     /// Takes an underlying [`Rc`] from this [`AtomicRc`], leaving a null pointer.
@@ -397,6 +406,12 @@ impl<T: RcObject> Rc<T> {
         Self::from_raw(Raw::null())
     }
 
+    /// Returns `true` if the pointer is null ignoring the tag.
+    #[inline(always)]
+    pub fn is_null(&self) -> bool {
+        self.ptr.is_null()
+    }
+
     #[inline(always)]
     pub(crate) fn from_raw(ptr: Raw<T>) -> Self {
         Self {
@@ -452,7 +467,7 @@ impl<T: RcObject> Rc<T> {
     /// read-modify-write operations.
     #[inline]
     pub fn weak_many<const N: usize>(&self) -> [Weak<T>; N] {
-        if let Some(cnt) = unsafe { self.as_ptr().as_raw().as_ref() } {
+        if let Some(cnt) = unsafe { self.ptr.as_raw().as_ref() } {
             cnt.increment_weak(N as u32);
         }
         array::from_fn(|_| Weak::null())
@@ -474,7 +489,7 @@ impl<T: RcObject> Rc<T> {
 
     #[inline]
     pub(crate) fn into_raw(self) -> Raw<T> {
-        let new_ptr = self.as_ptr();
+        let new_ptr = self.ptr;
         // Skip decrementing the ref count.
         forget(self);
         new_ptr
@@ -499,12 +514,12 @@ impl<T: RcObject> Rc<T> {
     #[inline]
     pub fn downgrade(&self) -> Weak<T> {
         unsafe {
-            if let Some(cnt) = self.as_ptr().as_raw().as_ref() {
+            if let Some(cnt) = self.ptr.as_raw().as_ref() {
                 cnt.increment_weak(1);
                 return Weak::from_raw(self.ptr);
             }
         }
-        Weak::null()
+        Weak::from_raw(self.ptr)
     }
 
     /// Creates a [`Snapshot`] pointer to the same object.
@@ -522,7 +537,7 @@ impl<T: RcObject> Rc<T> {
     /// The pointer must be a valid memory location to dereference.
     #[inline]
     pub unsafe fn deref(&self) -> &T {
-        self.as_ptr().deref().data()
+        self.ptr.deref().data()
     }
 
     /// Dereferences the pointer and returns a mutable reference.
@@ -535,13 +550,13 @@ impl<T: RcObject> Rc<T> {
     /// other threads must not have references to the object.
     #[inline]
     pub unsafe fn deref_mut(&mut self) -> &mut T {
-        self.as_ptr().deref_mut().data_mut()
+        self.ptr.deref_mut().data_mut()
     }
 
     /// Dereferences the pointer and returns an immutable reference if it is not null.
     #[inline]
     pub fn as_ref(&self) -> Option<&T> {
-        if self.as_ptr().is_null() {
+        if self.ptr.is_null() {
             None
         } else {
             Some(unsafe { self.deref() })
@@ -555,7 +570,7 @@ impl<T: RcObject> Rc<T> {
     /// Other threads must not have references to the object.
     #[inline]
     pub unsafe fn as_mut(&mut self) -> Option<&mut T> {
-        if self.as_ptr().is_null() {
+        if self.ptr.is_null() {
             None
         } else {
             Some(unsafe { self.deref_mut() })
@@ -645,7 +660,7 @@ impl<T: RcObject> Drop for NewRcIter<T> {
 /// Unlike [`Rc`] pointer, this pointer does not own a strong reference count by itself.
 /// This pointer is valid for use only during the lifetime of EBR guard `'g`.
 pub struct Snapshot<'g, T> {
-    pub(crate) acquired: Raw<T>,
+    pub(crate) ptr: Raw<T>,
     pub(crate) _marker: PhantomData<&'g T>,
 }
 
@@ -658,13 +673,16 @@ impl<'g, T> Clone for Snapshot<'g, T> {
 impl<'g, T> Copy for Snapshot<'g, T> {}
 
 impl<'g, T: RcObject> Snapshot<'g, T> {
+    /// Returns `true` if the pointer is null ignoring the tag.
+    #[inline(always)]
+    pub fn is_null(&self) -> bool {
+        self.ptr.is_null()
+    }
+
     /// Creates an [`Rc`] pointer by incrementing the strong reference counter.
     #[inline]
     pub fn counted(self) -> Rc<T> {
-        let rc = Rc {
-            ptr: self.as_ptr(),
-            _marker: PhantomData,
-        };
+        let rc = Rc::from_raw(self.ptr);
         unsafe {
             if let Some(cnt) = rc.ptr.as_raw().as_ref() {
                 cnt.increment_strong();
@@ -677,7 +695,7 @@ impl<'g, T: RcObject> Snapshot<'g, T> {
     #[inline]
     pub fn downgrade(self) -> WeakSnapshot<'g, T> {
         WeakSnapshot {
-            acquired: self.acquired,
+            ptr: self.ptr,
             _marker: PhantomData,
         }
     }
@@ -685,7 +703,7 @@ impl<'g, T: RcObject> Snapshot<'g, T> {
     /// Returns the tag stored within the pointer.
     #[inline(always)]
     pub fn tag(self) -> usize {
-        self.as_ptr().tag()
+        self.ptr.tag()
     }
 
     /// Returns the same pointer, but tagged with `tag`. `tag` is truncated to be fit into the
@@ -693,7 +711,7 @@ impl<'g, T: RcObject> Snapshot<'g, T> {
     #[inline]
     pub fn with_tag(self, tag: usize) -> Self {
         let mut result = self;
-        result.acquired = result.acquired.with_tag(tag);
+        result.ptr = result.ptr.with_tag(tag);
         result
     }
 
@@ -706,7 +724,7 @@ impl<'g, T: RcObject> Snapshot<'g, T> {
     /// The pointer must be a valid memory location to dereference.
     #[inline]
     pub unsafe fn deref(self) -> &'g T {
-        self.as_ptr().deref().data()
+        self.ptr.deref().data()
     }
 
     /// Dereferences the pointer and returns a mutable reference.
@@ -718,14 +736,14 @@ impl<'g, T: RcObject> Snapshot<'g, T> {
     /// The pointer must be a valid memory location to dereference and
     /// other threads must not have references to the object.
     #[inline]
-    pub unsafe fn deref_mut(self) -> &'g mut T {
-        self.as_ptr().deref_mut().data_mut()
+    pub unsafe fn deref_mut(mut self) -> &'g mut T {
+        self.ptr.deref_mut().data_mut()
     }
 
     /// Dereferences the pointer and returns an immutable reference if it is not null.
     #[inline]
     pub fn as_ref(self) -> Option<&'g T> {
-        if self.as_ptr().is_null() {
+        if self.ptr.is_null() {
             None
         } else {
             Some(unsafe { self.deref() })
@@ -739,7 +757,7 @@ impl<'g, T: RcObject> Snapshot<'g, T> {
     /// Other threads must not have references to the object.
     #[inline]
     pub unsafe fn as_mut(self) -> Option<&'g mut T> {
-        if self.as_ptr().is_null() {
+        if self.ptr.is_null() {
             None
         } else {
             Some(unsafe { self.deref_mut() })
@@ -752,7 +770,7 @@ impl<'g, T> Snapshot<'g, T> {
     #[inline(always)]
     pub fn null() -> Self {
         Self {
-            acquired: Tagged::null(),
+            ptr: Tagged::null(),
             _marker: PhantomData,
         }
     }
@@ -760,7 +778,7 @@ impl<'g, T> Snapshot<'g, T> {
     #[inline]
     pub(crate) fn from_raw(acquired: Raw<T>, _: &'g Guard) -> Self {
         Self {
-            acquired,
+            ptr: acquired,
             _marker: PhantomData,
         }
     }
@@ -776,20 +794,6 @@ impl<'g, T: RcObject> Default for Snapshot<'g, T> {
 impl<'g, T> PartialEq for Snapshot<'g, T> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self.acquired.eq(&other.acquired)
-    }
-}
-
-impl<T: RcObject> Pointer<T> for Rc<T> {
-    #[inline]
-    fn as_ptr(&self) -> Raw<T> {
-        self.ptr
-    }
-}
-
-impl<'g, T> Pointer<T> for Snapshot<'g, T> {
-    #[inline]
-    fn as_ptr(&self) -> Raw<T> {
-        self.acquired
+        self.ptr.eq(&other.ptr)
     }
 }

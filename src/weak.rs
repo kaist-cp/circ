@@ -8,7 +8,8 @@ use atomic::Atomic;
 use static_assertions::const_assert;
 
 use crate::ebr_impl::{Guard, Tagged};
-use crate::{CompareExchangeError, Pointer, Raw, RcInner, Snapshot};
+use crate::utils::{Raw, RcInner};
+use crate::{CompareExchangeError, Rc, RcObject, Snapshot};
 
 /// A thread-safe (atomic) mutable memory location that contains a [`Weak<T>`].
 ///
@@ -56,7 +57,7 @@ impl<T> AtomicWeak<T> {
     /// this operation.
     #[inline]
     pub fn store(&self, ptr: Weak<T>, order: Ordering, guard: &Guard) {
-        let new_ptr = ptr.as_ptr();
+        let new_ptr = ptr.ptr;
         forget(ptr);
         let old_ptr = self.link.swap(new_ptr, order);
         unsafe {
@@ -97,7 +98,7 @@ impl<T> AtomicWeak<T> {
     #[inline(always)]
     pub fn compare_exchange<'g>(
         &self,
-        expected: impl Pointer<T>,
+        expected: WeakSnapshot<'g, T>,
         desired: Weak<T>,
         success: Ordering,
         failure: Ordering,
@@ -105,12 +106,12 @@ impl<T> AtomicWeak<T> {
     ) -> Result<Weak<T>, CompareExchangeError<Weak<T>, WeakSnapshot<'g, T>>> {
         match self
             .link
-            .compare_exchange(expected.as_ptr(), desired.as_ptr(), success, failure)
+            .compare_exchange(expected.ptr, desired.ptr, success, failure)
         {
             Ok(_) => {
                 // Skip decrementing a weak count of the inserted pointer.
                 forget(desired);
-                let weak = Weak::from_raw(expected.as_ptr());
+                let weak = Weak::from_raw(expected.ptr);
                 Ok(weak)
             }
             Err(current) => {
@@ -142,7 +143,7 @@ impl<T> AtomicWeak<T> {
     #[inline(always)]
     pub fn compare_exchange_weak<'g>(
         &self,
-        expected: impl Pointer<T>,
+        expected: WeakSnapshot<'g, T>,
         desired: Weak<T>,
         success: Ordering,
         failure: Ordering,
@@ -150,12 +151,12 @@ impl<T> AtomicWeak<T> {
     ) -> Result<Weak<T>, CompareExchangeError<Weak<T>, WeakSnapshot<'g, T>>> {
         match self
             .link
-            .compare_exchange_weak(expected.as_ptr(), desired.as_ptr(), success, failure)
+            .compare_exchange_weak(expected.ptr, desired.ptr, success, failure)
         {
             Ok(_) => {
                 // Skip decrementing a weak count of the inserted pointer.
                 forget(desired);
-                let weak = Weak::from_raw(expected.as_ptr());
+                let weak = Weak::from_raw(expected.ptr);
                 Ok(weak)
             }
             Err(current) => {
@@ -196,10 +197,10 @@ impl<T> AtomicWeak<T> {
         guard: &'g Guard,
     ) -> Result<WeakSnapshot<'g, T>, CompareExchangeError<WeakSnapshot<'g, T>, WeakSnapshot<'g, T>>>
     {
-        let desired_raw = expected.as_ptr().with_tag(desired_tag);
+        let desired_raw = expected.ptr.with_tag(desired_tag);
         match self
             .link
-            .compare_exchange(expected.as_ptr(), desired_raw, success, failure)
+            .compare_exchange(expected.ptr, desired_raw, success, failure)
         {
             Ok(current) => Ok(WeakSnapshot::from_raw(current, guard)),
             Err(current) => Err(CompareExchangeError {
@@ -207,6 +208,14 @@ impl<T> AtomicWeak<T> {
                 current: WeakSnapshot::from_raw(current, guard),
             }),
         }
+    }
+
+    /// Returns a mutable reference to the stored `Weak`.
+    ///
+    /// This is safe because the mutable reference guarantees that no other threads are
+    /// concurrently accessing.
+    pub fn get_mut(&mut self) -> &mut Weak<T> {
+        unsafe { core::mem::transmute(self.link.get_mut()) }
     }
 }
 
@@ -279,6 +288,12 @@ impl<T> Weak<T> {
         Self::from_raw(Raw::null())
     }
 
+    /// Returns `true` if the pointer is null ignoring the tag.
+    #[inline(always)]
+    pub fn is_null(&self) -> bool {
+        self.ptr.is_null()
+    }
+
     #[inline(always)]
     pub(crate) fn from_raw(ptr: Raw<T>) -> Self {
         Self { ptr }
@@ -305,7 +320,7 @@ impl<T> Weak<T> {
 
     #[inline]
     pub(crate) fn into_raw(self) -> Raw<T> {
-        let new_ptr = self.as_ptr();
+        let new_ptr = self.ptr;
         // Skip decrementing the ref count.
         forget(self);
         new_ptr
@@ -316,6 +331,21 @@ impl<T> Weak<T> {
         if let Some(ptr) = unsafe { self.ptr.as_raw().as_ref() } {
             ptr.increment_weak(1);
         }
+    }
+}
+
+impl<T: RcObject> Weak<T> {
+    /// Attempts to upgrade the `Weak` pointer to an `Rc`.
+    /// Returns `None` if the referent has been destructed.
+    #[inline]
+    pub fn upgrade(&self) -> Option<Rc<T>> {
+        let Some(obj) = (unsafe { self.ptr.as_raw().as_ref() }) else {
+            return Some(Rc::from_raw(self.ptr));
+        };
+        if obj.increment_strong() {
+            return Some(Rc::from_raw(self.ptr));
+        }
+        None
     }
 }
 
@@ -337,19 +367,12 @@ impl<T> PartialEq for Weak<T> {
     }
 }
 
-impl<T> Pointer<T> for Weak<T> {
-    #[inline]
-    fn as_ptr(&self) -> Raw<T> {
-        self.ptr
-    }
-}
-
 /// A local weak pointer protected by the backend EBR.
 ///
 /// Unlike [`Weak`] pointer, this pointer does not own a weak reference count by itself.
 /// This pointer is valid for use only during the lifetime of EBR guard `'g`.
 pub struct WeakSnapshot<'g, T> {
-    pub(crate) acquired: Raw<T>,
+    pub(crate) ptr: Raw<T>,
     pub(crate) _marker: PhantomData<&'g T>,
 }
 
@@ -362,10 +385,16 @@ impl<'g, T> Clone for WeakSnapshot<'g, T> {
 impl<'g, T> Copy for WeakSnapshot<'g, T> {}
 
 impl<'g, T> WeakSnapshot<'g, T> {
+    /// Returns `true` if the pointer is null ignoring the tag.
+    #[inline(always)]
+    pub fn is_null(&self) -> bool {
+        self.ptr.is_null()
+    }
+
     /// Creates an [`Weak`] pointer by incrementing the weak reference counter.
     #[inline]
     pub fn counted(self) -> Weak<T> {
-        let weak = Weak::from_raw(self.as_ptr());
+        let weak = Weak::from_raw(self.ptr);
         weak.increment_weak();
         weak
     }
@@ -375,12 +404,12 @@ impl<'g, T> WeakSnapshot<'g, T> {
     /// This method checks the strong reference counter of the object and returns the [`Snapshot`]
     /// pointer if the pointer is a null pointer or the object is not destructed yet.
     pub fn upgrade(self) -> Option<Snapshot<'g, T>> {
-        let acquired = self.as_ptr();
-        if !acquired.is_null() && !unsafe { acquired.deref() }.is_not_destructed() {
+        let ptr = self.ptr;
+        if !ptr.is_null() && !unsafe { ptr.deref() }.is_not_destructed() {
             return None;
         }
         Some(Snapshot {
-            acquired,
+            ptr,
             _marker: PhantomData,
         })
     }
@@ -388,7 +417,7 @@ impl<'g, T> WeakSnapshot<'g, T> {
     /// Returns the tag stored within the pointer.
     #[inline(always)]
     pub fn tag(self) -> usize {
-        self.as_ptr().tag()
+        self.ptr.tag()
     }
 
     /// Returns the same pointer, but tagged with `tag`. `tag` is truncated to be fit into the
@@ -396,7 +425,7 @@ impl<'g, T> WeakSnapshot<'g, T> {
     #[inline]
     pub fn with_tag(self, tag: usize) -> Self {
         let mut result = self;
-        result.acquired = result.acquired.with_tag(tag);
+        result.ptr = result.ptr.with_tag(tag);
         result
     }
 }
@@ -406,7 +435,7 @@ impl<'g, T> WeakSnapshot<'g, T> {
     #[inline(always)]
     pub fn null() -> Self {
         Self {
-            acquired: Tagged::null(),
+            ptr: Tagged::null(),
             _marker: PhantomData,
         }
     }
@@ -414,7 +443,7 @@ impl<'g, T> WeakSnapshot<'g, T> {
     #[inline]
     pub(crate) fn from_raw(acquired: Raw<T>, _: &'g Guard) -> Self {
         Self {
-            acquired,
+            ptr: acquired,
             _marker: PhantomData,
         }
     }
@@ -430,13 +459,6 @@ impl<'g, T> Default for WeakSnapshot<'g, T> {
 impl<'g, T> PartialEq for WeakSnapshot<'g, T> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self.acquired.eq(&other.acquired)
-    }
-}
-
-impl<'g, T> Pointer<T> for WeakSnapshot<'g, T> {
-    #[inline]
-    fn as_ptr(&self) -> Raw<T> {
-        self.acquired
+        self.ptr.eq(&other.ptr)
     }
 }

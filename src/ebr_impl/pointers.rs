@@ -89,10 +89,6 @@ impl<T> Tagged<T> {
         (ptr & !low_bits::<T>() & !Self::high_bits()) as *mut T
     }
 
-    pub fn as_usize(&self) -> usize {
-        self.ptr as usize
-    }
-
     pub fn with_tag(&self, tag: usize) -> Self {
         Self::from(with_tag(self.ptr, tag))
     }
@@ -127,17 +123,6 @@ impl<T> Tagged<T> {
             None
         } else {
             Some(self.deref())
-        }
-    }
-
-    /// # Safety
-    ///
-    /// The pointer (without high and low tag bits) must be a valid location to dereference.
-    pub unsafe fn as_mut<'g>(&mut self) -> Option<&'g mut T> {
-        if self.is_null() {
-            None
-        } else {
-            Some(self.deref_mut())
         }
     }
 }
