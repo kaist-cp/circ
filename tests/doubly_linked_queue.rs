@@ -72,18 +72,19 @@ impl<T: Sync + Send> DLQueue<T> {
 
         loop {
             let ltail = self.tail.load(Ordering::Acquire, guard);
-            unsafe { node.deref_mut() }.prev = ltail.downgrade();
+            unsafe { node.deref_mut() }.prev = ltail.downgrade().counted();
 
             // Try to help the previous enqueue to complete.
             if let Some(lprev) = ltail
                 .as_ref()
                 .unwrap()
                 .prev
-                .as_snapshot(guard)
+                .snapshot(guard)
+                .upgrade()
                 .and_then(Snapshot::as_ref)
             {
                 if lprev.next.load(Ordering::SeqCst, guard).is_null() {
-                    lprev.next.store(ltail.upgrade(), Ordering::Relaxed, guard);
+                    lprev.next.store(ltail.counted(), Ordering::Relaxed, guard);
                 }
             }
             match self
@@ -117,7 +118,7 @@ impl<T: Sync + Send> DLQueue<T> {
                 .head
                 .compare_exchange(
                     lhead,
-                    lnext.upgrade(),
+                    lnext.counted(),
                     Ordering::SeqCst,
                     Ordering::SeqCst,
                     guard,

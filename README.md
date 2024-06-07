@@ -24,28 +24,58 @@ Loading a `Snapshot` from `AtomicRc` does not increment the count of the referen
 Instead, the referent of `Snapshot` is protected with epoch-based reclamation (EBR),
 using a modified version of [crossbeam-epoch](https://docs.rs/crossbeam-epoch/latest/crossbeam_epoch/).
 
-In fact, CIRC relies on EBR to safely reclaim zero-count objects.
+In fact, CIRC relies on EBR to safely reclaim zero-count objects under the hood.
 Therefore, all accesses to `AtomicRc` must be inside an EBR-protected critical section.
 A thread can activate a critical section with `circ::cs()`,
 which returns an RAII-style `Guard`.
 `AtomicRc`'s methods take a reference to `Guard` to ensure that it is run in a critical section.
 The critical section is deactivated when the guard is dropped.
 
-A `Snapshot<'g, T>` is valid only inside the critical section is was created in (thus "temporary" and "local").
+A `Snapshot<'g, T>` is valid only inside the critical section it was created in (thus "temporary" and "local").
 This is enforced by the `'g` lifetime parameter,
 which is derived from the reference to the guard passed to `AtomicRc`'s methods.
-To store a loaded `Snapshot` to `AtomicRc` or send it somewhere else,
-first `upgrade` it to `Rc`.
+To store a loaded `Snapshot` to `AtomicRc` or send it to someone else,
+first `upgrade` it to an `Rc`.
 
 ## Managing cyclic structures with weak references
 
 Cycles formed with `Rc` and `AtomicRc` references cannot be reclaimed automatically due to cyclic dependency of reclamation.
 In some cases, the dependency can be broken with `circ::Weak`, CIRC's counterpart for `std::sync::Weak`.
+A `Weak` does not prevent destruction of the referent (allowing reclamation of cyclic structure), and
+thus is not directly dereferenceable.
+However, it prevents deallocation of the referenced memory block,
+and can be upgraded to `Rc` if the object has not been destructed yet.
+`Weak` can be stored in `AtomicWeak`, and a `WeakSnapshot` can be loaded from an `AtomicWeak`.
 
-CIRC also supports `AtomicWeak`.
-In addition to storing and loading a `Weak`,
-`AtomicWeak` supports directly loading a `Snapshot`
-so that the user quickly obtain `deref`-able pointer without incrementing the counts twice (weak, then strong).
+## Type relation
+
+```text
+       ┌──────────┐                       ┌────────────┐
+       │          │                       │            │
+       │ AtomicRc │                       │ AtomicWeak │
+┌──────┤          │                       │            ├─────┐
+│      └──────────┘                       └────────────┘     │
+│             ▲                                ▲             │
+│             │ store                    store │             │
+│             │                                │             │
+│          ┌──┴─┐         downgrade        ┌───┴──┐          │
+│ load     │    ├─────────────────────────►│      │     load │
+│          │ Rc │                          │ Weak │          │
+│          │    │◄─────────────────────────┤      │          │          has count
+│          └┬───┘         upgrade          └─────┬┘          │              ▲
+│           │  ▲                             ▲   │           │              │
+│  snapshot │  │ counted             counted │   │ snapshot  │            ──┼──
+│           ▼  │                             │   ▼           │              │
+│      ┌───────┴──┐       downgrade       ┌──┴───────────┐   │              ▼
+└─────►│          ├──────────────────────►│              │◄──┘       doesn't have count
+       │ Snapshot │                       │ WeakSnapshot │
+       │          │◄──────────────────────┤              │
+       └──────────┘       upgrade         └──────────────┘
+
+                              │
+    prevents destruction   ◄──┼──►    prevents deallocation
+      (deref-able)            │
+```
 
 ## Comparison with other concurrent reference counting algorithms
 
@@ -133,7 +163,7 @@ See `./tests` for more examples with actual data structures.
 ## Limitations
 * Since it uses EBR, the reclamation cannot proceed if a thread does not deactivate its critical section.
 * Works only for `Sized` types.
-* Immediate recursive destruction works only along edges of the same type.
+* Immediate recursive destruction works only along the edges of the same type.
 
 
 <!--

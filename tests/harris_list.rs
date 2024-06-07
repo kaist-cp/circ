@@ -116,7 +116,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
             .next
             .compare_exchange(
                 prev_next,
-                self.curr.upgrade(),
+                self.curr.counted(),
                 Ordering::Release,
                 Ordering::Relaxed,
                 guard,
@@ -132,7 +132,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
         node.as_ref()
             .unwrap()
             .next
-            .swap(self.curr.upgrade(), Ordering::Relaxed);
+            .swap(self.curr.counted(), Ordering::Relaxed);
 
         match self.prev.as_ref().unwrap().next.compare_exchange(
             self.curr,
@@ -165,7 +165,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
 
         let _ = self.prev.as_ref().unwrap().next.compare_exchange(
             self.curr,
-            next.upgrade(),
+            next.counted(),
             Ordering::Release,
             Ordering::Relaxed,
             guard,

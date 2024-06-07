@@ -9,7 +9,7 @@ use atomic::Atomic;
 use static_assertions::const_assert;
 
 use crate::ebr_impl::{global_epoch, Guard, Tagged};
-use crate::{Pointer, Raw, RcInner, Weak};
+use crate::{Pointer, Raw, RcInner, Weak, WeakSnapshot};
 
 /// A common trait for reference-counted object types.
 ///
@@ -79,17 +79,17 @@ impl<T> Tagged<RcInner<T>> {
     }
 }
 
-/// A result of unsuccessful [`AtomicRc::compare_exchange`].
+/// Result of a failed `compare_exchange` operation.
 ///
 /// It returns the ownership of the pointer which was given as a parameter `desired`.
-pub struct CompareExchangeErrorRc<'g, T, P> {
-    /// The `desired` which was given as a parameter of [`AtomicRc::compare_exchange`].
+pub struct CompareExchangeError<P, S> {
+    /// The desired value that was passed to `compare_exchange`.
     pub desired: P,
     /// The current pointer value inside the atomic pointer.
-    pub current: Snapshot<'g, T>,
+    pub current: S,
 }
 
-/// A atomically mutable field that contains an [`Rc<T>`].
+/// A thread-safe (atomic) mutable memory location that contains an [`Rc<T>`].
 ///
 /// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
 /// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
@@ -127,22 +127,6 @@ impl<T: RcObject> AtomicRc<T> {
         }
     }
 
-    /// Loads a raw tagged pointer from this `AtomicRc`.
-    ///
-    /// This method takes an [`Ordering`] argument which describes the memory ordering of this
-    /// operation. Possible values are `SeqCst`, `Acquire` and `Relaxed`.
-    ///
-    /// Note that the returned pointer cannot be dereferenced safely, becuase it is protected by
-    /// neither a SMR nor a reference count. To dereference, use [`AtomicRc::load`] method instead.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `order` is `Release` or `AcqRel`.
-    #[inline]
-    pub fn load_raw(&self, order: Ordering) -> Raw<T> {
-        self.link.load(order)
-    }
-
     /// Loads a [`Snapshot`] pointer from this `AtomicRc`.
     ///
     /// This method takes an [`Ordering`] argument which describes the memory ordering of this
@@ -153,7 +137,7 @@ impl<T: RcObject> AtomicRc<T> {
     /// Panics if `order` is `Release` or `AcqRel`.
     #[inline]
     pub fn load<'g>(&self, order: Ordering, guard: &'g Guard) -> Snapshot<'g, T> {
-        Snapshot::from_raw(self.load_raw(order), guard)
+        Snapshot::from_raw(self.link.load(order), guard)
     }
 
     /// Stores an [`Rc`] pointer into this `AtomicRc`.
@@ -210,7 +194,7 @@ impl<T: RcObject> AtomicRc<T> {
         success: Ordering,
         failure: Ordering,
         guard: &'g Guard,
-    ) -> Result<Rc<T>, CompareExchangeErrorRc<'g, T, Rc<T>>> {
+    ) -> Result<Rc<T>, CompareExchangeError<Rc<T>, Snapshot<'g, T>>> {
         let mut expected_ptr = expected.as_ptr();
         let desired_ptr = desired.as_ptr().with_timestamp();
         loop {
@@ -229,7 +213,7 @@ impl<T: RcObject> AtomicRc<T> {
                         expected_ptr = current;
                     } else {
                         let current = Snapshot::from_raw(current, guard);
-                        return Err(CompareExchangeErrorRc { desired, current });
+                        return Err(CompareExchangeError { desired, current });
                     }
                 }
             }
@@ -262,7 +246,7 @@ impl<T: RcObject> AtomicRc<T> {
         success: Ordering,
         failure: Ordering,
         guard: &'g Guard,
-    ) -> Result<Rc<T>, CompareExchangeErrorRc<'g, T, Rc<T>>> {
+    ) -> Result<Rc<T>, CompareExchangeError<Rc<T>, Snapshot<'g, T>>> {
         let mut expected_ptr = expected.as_ptr();
         let desired_ptr = desired.as_ptr().with_timestamp();
         loop {
@@ -281,7 +265,7 @@ impl<T: RcObject> AtomicRc<T> {
                         expected_ptr = current;
                     } else {
                         let current = Snapshot::from_raw(current, guard);
-                        return Err(CompareExchangeErrorRc { desired, current });
+                        return Err(CompareExchangeError { desired, current });
                     }
                 }
             }
@@ -316,7 +300,7 @@ impl<T: RcObject> AtomicRc<T> {
         success: Ordering,
         failure: Ordering,
         guard: &'g Guard,
-    ) -> Result<Snapshot<'g, T>, CompareExchangeErrorRc<'g, T, Snapshot<'g, T>>> {
+    ) -> Result<Snapshot<'g, T>, CompareExchangeError<Snapshot<'g, T>, Snapshot<'g, T>>> {
         let mut expected_raw = expected.as_ptr();
         let desired_raw = expected_raw.with_tag(desired_tag).with_timestamp();
         loop {
@@ -329,7 +313,7 @@ impl<T: RcObject> AtomicRc<T> {
                     if current.with_high_tag(0) == expected_raw.with_high_tag(0) {
                         expected_raw = current;
                     } else {
-                        return Err(CompareExchangeErrorRc {
+                        return Err(CompareExchangeError {
                             desired: Snapshot::from_raw(desired_raw, guard),
                             current: Snapshot::from_raw(current, guard),
                         });
@@ -378,9 +362,7 @@ impl<T: RcObject> From<Rc<T>> for AtomicRc<T> {
 
 /// A reference-counted pointer to an object of type `T`.
 ///
-/// Unlike [`Snapshot`] pointer, This pointer owns a strong reference count by itself, preventing
-/// reclamation by the backend EBR. When `T` implements [`Send`] and [`Sync`], [`Rc<T>`] also
-/// implements these traits.
+/// When `T` implements [`Send`] and [`Sync`], [`Rc<T>`] also implements these traits.
 ///
 /// The pointer must be properly aligned. Since it is aligned, a tag can be stored into the unused
 /// least significant bits of the address. For example, the tag for a pointer to a sized type `T`
@@ -409,7 +391,7 @@ impl<T: RcObject> Clone for Rc<T> {
 }
 
 impl<T: RcObject> Rc<T> {
-    /// Constructs a new `Rc` representing a null pointer.
+    /// Constructs a null `Rc` pointer.
     #[inline(always)]
     pub fn null() -> Self {
         Self::from_raw(Raw::null())
@@ -527,7 +509,7 @@ impl<T: RcObject> Rc<T> {
 
     /// Creates a [`Snapshot`] pointer to the same object.
     #[inline]
-    pub fn as_snapshot<'g>(&self, guard: &'g Guard) -> Snapshot<'g, T> {
+    pub fn snapshot<'g>(&self, guard: &'g Guard) -> Snapshot<'g, T> {
         Snapshot::from_raw(self.ptr, guard)
     }
 
@@ -660,12 +642,11 @@ impl<T: RcObject> Drop for NewRcIter<T> {
 
 /// A local pointer protected by the backend EBR.
 ///
-/// Unlike [`Rc`] pointer, This pointer does not own a strong reference count by itself.
-/// Instead, it prevents the destruction of the pointer by the coarse-grained protection that EBR
-/// provides. This pointer is valid for use only during the lifetime of EBR guard `'g`.
+/// Unlike [`Rc`] pointer, this pointer does not own a strong reference count by itself.
+/// This pointer is valid for use only during the lifetime of EBR guard `'g`.
 pub struct Snapshot<'g, T> {
-    acquired: Raw<T>,
-    _marker: PhantomData<&'g T>,
+    pub(crate) acquired: Raw<T>,
+    pub(crate) _marker: PhantomData<&'g T>,
 }
 
 impl<'g, T> Clone for Snapshot<'g, T> {
@@ -679,7 +660,7 @@ impl<'g, T> Copy for Snapshot<'g, T> {}
 impl<'g, T: RcObject> Snapshot<'g, T> {
     /// Creates an [`Rc`] pointer by incrementing the strong reference counter.
     #[inline]
-    pub fn upgrade(self) -> Rc<T> {
+    pub fn counted(self) -> Rc<T> {
         let rc = Rc {
             ptr: self.as_ptr(),
             _marker: PhantomData,
@@ -692,12 +673,13 @@ impl<'g, T: RcObject> Snapshot<'g, T> {
         rc
     }
 
-    /// Creates a `Weak` pointer by incrementing the weak reference counter.
+    /// Converts to `WeakSnapshot`. This does not touch the reference counter.
     #[inline]
-    pub fn downgrade(self) -> Weak<T> {
-        let weak = Weak::from_raw(self.as_ptr());
-        weak.increment_weak();
-        weak
+    pub fn downgrade(self) -> WeakSnapshot<'g, T> {
+        WeakSnapshot {
+            acquired: self.acquired,
+            _marker: PhantomData,
+        }
     }
 
     /// Returns the tag stored within the pointer.
