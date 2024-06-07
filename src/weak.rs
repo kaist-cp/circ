@@ -103,7 +103,6 @@ impl<T> AtomicWeak<T> {
         failure: Ordering,
         guard: &'g Guard,
     ) -> Result<Weak<T>, CompareExchangeError<Weak<T>, WeakSnapshot<'g, T>>> {
-        // TODO: why are't we looking at high tags here??
         match self
             .link
             .compare_exchange(expected.as_ptr(), desired.as_ptr(), success, failure)
