@@ -35,7 +35,7 @@ A `Snapshot<'g, T>` is valid only inside the critical section it was created in 
 This is enforced by the `'g` lifetime parameter,
 which is derived from the reference to the guard passed to `AtomicRc`'s methods.
 To store a loaded `Snapshot` to `AtomicRc` or send it to someone else,
-first `upgrade` it to an `Rc`.
+first promote it to an `Rc` with `.counted()`.
 
 ## Managing cyclic structures with weak references
 
@@ -148,9 +148,9 @@ assert_eq!(second.as_ref().map(|node| &node.item), Some(&2));
 // only within the scope of `Guard`. After the `Guard` is dropped, further accesses to the `Snapshot`
 // pointers are forbidden by the Rust type system.
 //
-// If we want to keep pointers alive, we need to `upgrade` them to `Rc`s.
+// If we want to keep pointers alive, we need to promote them to `Rc`s with `counted()`.
 // `Rc` is independent to the EBR backend, and owns the reference count by itself.
-let first_rc = first.upgrade();
+let first_rc = first.counted();
 drop(guard);
 
 // Even after the `Guard` is dropped, `first_rc` is still accessible.
