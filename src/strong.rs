@@ -293,6 +293,9 @@ impl<T: RcObject> AtomicRc<T> {
     /// of this operation `Relaxed`, and using `Release` makes the successful load
     /// `Relaxed`. The failure ordering can only be `SeqCst`, `Acquire` or `Relaxed`
     /// and must be equivalent to or weaker than the success ordering.
+    ///
+    /// [`AtomicRc::compare_exchange`] subsumes this method, but it is more efficient because it
+    /// does not require [`Rc`] as `desired`.
     #[inline]
     pub fn compare_exchange_tag<'g>(
         &self,
