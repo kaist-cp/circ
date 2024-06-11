@@ -327,13 +327,22 @@ impl<T: RcObject> AtomicRc<T> {
         }
     }
 
-    /// Returns a mutable reference to the stored `Rc`.
-    ///
-    /// This is safe because the mutable reference guarantees that no other threads are
-    /// concurrently accessing.
-    pub fn get_mut(&mut self) -> &mut Rc<T> {
-        unsafe { core::mem::transmute(self.link.get_mut()) }
-    }
+    // get_mut is unsound, because it allows writing ref without link epoch.
+    // Consider the motivating 3-thread example where
+    // * T1 @e+1 loads node1
+    // * T2 unlink node1 @e
+    // * T3 @e+2 makes node2 and sends Rc to T1
+    // * T1 installs node2 Rc in node1, exits CS
+    // * node1 is destructed @e+3
+    // ... Or is it actually fine T1 can't have &mut of node1?
+    //
+    // /// Returns a mutable reference to the stored `Rc`.
+    // ///
+    // /// This is safe because the mutable reference guarantees that no other threads are
+    // /// concurrently accessing.
+    // pub fn get_mut(&mut self) -> &mut Rc<T> {
+    //     unsafe { core::mem::transmute(self.link.get_mut()) }
+    // }
 
     /// Takes an underlying [`Rc`] from this [`AtomicRc`], leaving a null pointer.
     #[inline]
