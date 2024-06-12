@@ -1,0 +1,33 @@
+name: Test CIRC
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: recursive
+
+    - name: Install Rust nightly toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        components: rustfmt, clippy
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run checks
+      run: |
+        cargo check --verbose
+        cargo fmt -- --check
+        cargo clippy -- -D warnings
+        cargo audit
+
+    - name: Run tests
+      run: |
+        cargo test
+        cargo test --release
