@@ -316,6 +316,7 @@ impl<T> Weak<T> {
         self
     }
 
+    /// Creates a [`Snapshot`] pointer to the same object.
     #[inline]
     pub fn snapshot<'g>(&self, guard: &'g Guard) -> WeakSnapshot<'g, T> {
         WeakSnapshot::from_raw(self.ptr, guard)

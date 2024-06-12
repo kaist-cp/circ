@@ -3,7 +3,6 @@ use core::mem;
 
 use scopeguard::defer;
 
-// use super::collector::Collector;
 use super::deferred::Deferred;
 use super::internal::Local;
 use super::RawShared;
@@ -82,8 +81,6 @@ impl Guard {
     /// Call this method after deferring execution of a function if you want to get it executed as
     /// soon as possible. Flushing will make sure it is residing in in the global cache, so that
     /// any thread has a chance of taking the function and executing it.
-    ///
-    // If this method is called from an [`unprotected`] guard, it is a no-op (nothing happens).
     pub fn flush(&self) {
         if let Some(local) = unsafe { self.local.as_ref() } {
             local.flush(self);
@@ -96,8 +93,6 @@ impl Guard {
     /// holding an old epoch. For safety, you should not maintain any guard-based reference across
     /// the call (the latter is enforced by `&mut self`). The thread will only be repinned if this
     /// is the only active guard for the current thread.
-    ///
-    // If this method is called from an [`unprotected`] guard, then the call will be just no-op.
     pub fn reactivate(&mut self) {
         if let Some(local) = unsafe { self.local.as_ref() } {
             local.repin();
@@ -111,9 +106,6 @@ impl Guard {
     /// and don't need to maintain any guard-based reference across the call (the latter is enforced
     /// by `&mut self`). The thread will only be unpinned if this is the only active guard for the
     /// current thread.
-    ///
-    // If this method is called from an [`unprotected`] guard, then the passed function is called
-    // directly without unpinning the thread.
     pub fn reactivate_after<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce() -> R,
@@ -135,18 +127,6 @@ impl Guard {
 
         f()
     }
-
-    /*
-    /// Returns the `Collector` associated with this guard.
-    ///
-    /// This method is useful when you need to ensure that all guards used with
-    /// a data structure come from the same collector.
-    ///
-    /// If this method is called from an [`unprotected`] guard, then `None` is returned.
-    pub fn collector(&self) -> Option<&Collector> {
-        unsafe { self.local.as_ref().map(|local| local.collector()) }
-    }
-    */
 
     /// Increases the manual collection counter, and perform collection if the counter reaches
     /// the threshold which is set by `set_manual_collection_interval`.

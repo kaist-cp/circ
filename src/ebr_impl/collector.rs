@@ -84,14 +84,6 @@ impl LocalHandle {
     pub(crate) fn is_pinned(&self) -> bool {
         unsafe { (*self.local).is_pinned() }
     }
-
-    /*
-    /// Returns the `Collector` associated with this handle.
-    #[inline]
-    pub(crate) fn collector(&self) -> &Collector {
-        unsafe { (*self.local).collector() }
-    }
-    */
 }
 
 impl Drop for LocalHandle {
