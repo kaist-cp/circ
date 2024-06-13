@@ -1,5 +1,8 @@
 # CIRC: Concurrent Immediate Reference Counting
 
+[![crates.io](https://img.shields.io/crates/v/circ.svg)](https://crates.io/crates/circ)
+[![docs.rs](https://img.shields.io/docsrs/circ/latest)](https://docs.rs/circ)
+
 An efficient thread-safe reference-counted pointer, with the support for atomic shared mutability and weak pointers.
 
 This library is based on the following research paper.
