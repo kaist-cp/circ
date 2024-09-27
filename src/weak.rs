@@ -1,4 +1,5 @@
 use std::{
+    fmt::{Debug, Formatter, Pointer},
     marker::PhantomData,
     mem::{forget, size_of},
     sync::atomic::{AtomicUsize, Ordering},
@@ -232,6 +233,32 @@ impl<T> From<Weak<T>> for AtomicWeak<T> {
     }
 }
 
+impl<T> From<&Weak<T>> for AtomicWeak<T> {
+    #[inline]
+    fn from(value: &Weak<T>) -> Self {
+        Self::from(value.clone())
+    }
+}
+
+impl<T: RcObject> From<&Rc<T>> for AtomicWeak<T> {
+    #[inline]
+    fn from(value: &Rc<T>) -> Self {
+        Self::from(value.downgrade())
+    }
+}
+
+impl<T> Debug for AtomicWeak<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.link.load(Ordering::Relaxed), f)
+    }
+}
+
+impl<T> Pointer for AtomicWeak<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.link.load(Ordering::Relaxed), f)
+    }
+}
+
 impl<T> Drop for AtomicWeak<T> {
     #[inline(always)]
     fn drop(&mut self) {
@@ -336,6 +363,11 @@ impl<T> Weak<T> {
             ptr.increment_weak(1);
         }
     }
+
+    #[inline]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.ptr.ptr_eq(other.ptr)
+    }
 }
 
 impl<T: RcObject> Weak<T> {
@@ -364,10 +396,27 @@ impl<T> Drop for Weak<T> {
     }
 }
 
-impl<T> PartialEq for Weak<T> {
-    #[inline(always)]
-    fn eq(&self, other: &Self) -> bool {
-        self.ptr == other.ptr
+impl<'g, T> From<WeakSnapshot<'g, T>> for Weak<T> {
+    fn from(value: WeakSnapshot<'g, T>) -> Self {
+        value.counted()
+    }
+}
+
+impl<'g, T: RcObject> From<Snapshot<'g, T>> for Weak<T> {
+    fn from(value: Snapshot<'g, T>) -> Self {
+        value.downgrade().counted()
+    }
+}
+
+impl<T> Debug for Weak<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.ptr, f)
+    }
+}
+
+impl<T> Pointer for Weak<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.ptr, f)
     }
 }
 
@@ -451,6 +500,11 @@ impl<'g, T> WeakSnapshot<'g, T> {
             _marker: PhantomData,
         }
     }
+
+    #[inline]
+    pub fn ptr_eq(self, other: Self) -> bool {
+        self.ptr.ptr_eq(other.ptr)
+    }
 }
 
 impl<'g, T> Default for WeakSnapshot<'g, T> {
@@ -460,9 +514,20 @@ impl<'g, T> Default for WeakSnapshot<'g, T> {
     }
 }
 
-impl<'g, T> PartialEq for WeakSnapshot<'g, T> {
-    #[inline(always)]
-    fn eq(&self, other: &Self) -> bool {
-        self.ptr.eq(&other.ptr)
+impl<'g, T: RcObject> From<Snapshot<'g, T>> for WeakSnapshot<'g, T> {
+    fn from(value: Snapshot<'g, T>) -> Self {
+        value.downgrade()
+    }
+}
+
+impl<'g, T> Debug for WeakSnapshot<'g, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.ptr, f)
+    }
+}
+
+impl<'g, T> Pointer for WeakSnapshot<'g, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.ptr, f)
     }
 }

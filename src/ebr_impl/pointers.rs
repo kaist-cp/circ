@@ -3,6 +3,7 @@ use core::marker::PhantomData;
 use core::mem::align_of;
 use core::ptr::null_mut;
 use core::sync::atomic::AtomicUsize;
+use std::fmt::{Debug, Formatter, Pointer};
 
 use atomic::{Atomic, Ordering};
 
@@ -10,6 +11,18 @@ use super::Guard;
 
 pub struct Tagged<T: ?Sized> {
     ptr: *mut T,
+}
+
+impl<T> Debug for Tagged<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.as_raw(), f)
+    }
+}
+
+impl<T> Pointer for Tagged<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.as_raw(), f)
+    }
 }
 
 impl<T> Default for Tagged<T> {
@@ -25,14 +38,6 @@ impl<T> Clone for Tagged<T> {
 }
 
 impl<T> Copy for Tagged<T> {}
-
-impl<T> PartialEq for Tagged<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.with_high_tag(0).ptr == other.with_high_tag(0).ptr
-    }
-}
-
-impl<T> Eq for Tagged<T> {}
 
 impl<T> Hash for Tagged<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -125,6 +130,11 @@ impl<T> Tagged<T> {
             Some(self.deref())
         }
     }
+
+    pub fn ptr_eq(self, other: Self) -> bool {
+        // Ignore the epoch tags, and compare between pointer values.
+        self.with_high_tag(0).ptr == other.with_high_tag(0).ptr
+    }
 }
 
 /// Returns a bitmask containing the unused least significant bits of an aligned pointer to `T`.
@@ -196,6 +206,7 @@ impl<T> RawAtomic<T> {
     }
 }
 
+// A shared pointer type only for the internal EBR implementation.
 pub(crate) struct RawShared<'g, T> {
     inner: Tagged<T>,
     _marker: PhantomData<&'g T>,
@@ -238,7 +249,7 @@ impl<'g, T> From<Tagged<T>> for RawShared<'g, T> {
 
 impl<'g, T> PartialEq for RawShared<'g, T> {
     fn eq(&self, other: &Self) -> bool {
-        self.inner == other.inner
+        self.inner.ptr_eq(other.inner)
     }
 }
 

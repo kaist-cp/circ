@@ -105,7 +105,7 @@ impl<'g, K: Ord, V> Cursor<'g, K, V> {
         };
 
         // If prev and curr WERE adjacent, no need to clean up
-        if prev_next == self.curr {
+        if prev_next.ptr_eq(self.curr) {
             return Ok(found);
         }
 
