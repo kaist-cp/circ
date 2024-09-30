@@ -252,18 +252,6 @@ impl<'g, T> From<Tagged<T>> for RawShared<'g, T> {
     }
 }
 
-impl<'g, T> PartialEq for RawShared<'g, T> {
-    /// Returns `true` if the two pointer values, including the tag values set by `with_tag`,
-    /// are identical.
-    fn eq(&self, other: &Self) -> bool {
-        // Instead of using a direct equality comparison (`==`), we use `ptr_eq`, which ignores
-        // the epoch tag in the high bits. This is because the epoch tags hold no significance
-        // for clients; they are only used internally by the CIRC engine to track the last
-        // accessed epoch for the pointer.
-        self.inner.ptr_eq(other.inner)
-    }
-}
-
 impl<'g, T> RawShared<'g, T> {
     pub fn null() -> Self {
         Self {
@@ -309,5 +297,15 @@ impl<'g, T> RawShared<'g, T> {
     #[cfg(test)]
     pub fn is_null(self) -> bool {
         self.inner.is_null()
+    }
+
+    /// Returns `true` if the two pointer values, including the tag values set by `with_tag`,
+    /// are identical.
+    pub fn ptr_eq(&self, other: Self) -> bool {
+        // Instead of using a direct equality comparison (`==`), we use `ptr_eq`, which ignores
+        // the epoch tag in the high bits. This is because the epoch tags hold no significance
+        // for clients; they are only used internally by the CIRC engine to track the last
+        // accessed epoch for the pointer.
+        self.inner.ptr_eq(other.inner)
     }
 }
