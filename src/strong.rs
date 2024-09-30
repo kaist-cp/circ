@@ -667,8 +667,8 @@ impl<T: RcObject + PartialEq> PartialEq for Rc<T> {
     fn eq(&self, other: &Self) -> bool {
         match (self.as_ref(), other.as_ref()) {
             (None, None) => true,
-            (None, Some(_)) | (Some(_), None) => false,
             (Some(x), Some(y)) => x.eq(y),
+            (_, _) => false,
         }
     }
 }
@@ -897,8 +897,8 @@ impl<'g, T: RcObject + PartialEq> PartialEq for Snapshot<'g, T> {
     fn eq(&self, other: &Self) -> bool {
         match (self.as_ref(), other.as_ref()) {
             (None, None) => true,
-            (None, Some(_)) | (Some(_), None) => false,
             (Some(x), Some(y)) => x.eq(y),
+            (_, _) => false,
         }
     }
 }
