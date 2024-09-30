@@ -610,10 +610,14 @@ impl<T: RcObject> Rc<T> {
         }
     }
 
-    /// Returns true if the two [`Rc`]s point to the same allocation in a vein similar to
-    /// [`std::ptr::eq`].
+    /// Returns `true` if the two pointer values, including the tag values set by `with_tag`,
+    /// are identical.
     #[inline]
     pub fn ptr_eq(&self, other: &Self) -> bool {
+        // Instead of using a direct equality comparison (`==`), we use `ptr_eq`, which ignores
+        // the epoch tag in the high bits. This is because the epoch tags hold no significance
+        // for clients; they are only used internally by the CIRC engine to track the last
+        // accessed epoch for the pointer.
         self.ptr.ptr_eq(other.ptr)
     }
 }
@@ -850,10 +854,14 @@ impl<'g, T: RcObject> Snapshot<'g, T> {
         }
     }
 
-    /// Returns true if the two [`Rc`]s point to the same allocation in a vein similar to
-    /// [`std::ptr::eq`].
+    /// Returns `true` if the two pointer values, including the tag values set by `with_tag`,
+    /// are identical.
     #[inline]
     pub fn ptr_eq(self, other: Self) -> bool {
+        // Instead of using a direct equality comparison (`==`), we use `ptr_eq`, which ignores
+        // the epoch tag in the high bits. This is because the epoch tags hold no significance
+        // for clients; they are only used internally by the CIRC engine to track the last
+        // accessed epoch for the pointer.
         self.ptr.ptr_eq(other.ptr)
     }
 }
