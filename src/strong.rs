@@ -1,5 +1,7 @@
 use std::{
     array,
+    fmt::{Debug, Formatter, Pointer},
+    hash::{Hash, Hasher},
     marker::PhantomData,
     mem::{forget, size_of},
     sync::atomic::{AtomicUsize, Ordering},
@@ -196,24 +198,24 @@ impl<T: RcObject> AtomicRc<T> {
         failure: Ordering,
         guard: &'g Guard,
     ) -> Result<Rc<T>, CompareExchangeError<Rc<T>, Snapshot<'g, T>>> {
-        let mut expected_ptr = expected.ptr;
-        let desired_ptr = desired.ptr.with_timestamp();
+        let mut expected_raw = expected.ptr;
+        let desired_raw = desired.ptr.with_timestamp();
         loop {
             match self
                 .link
-                .compare_exchange(expected_ptr, desired_ptr, success, failure)
+                .compare_exchange(expected_raw, desired_raw, success, failure)
             {
                 Ok(_) => {
                     // Skip decrementing a strong count of the inserted pointer.
                     forget(desired);
-                    let rc = Rc::from_raw(expected_ptr);
+                    let rc = Rc::from_raw(expected_raw);
                     return Ok(rc);
                 }
-                Err(current) => {
-                    if current.with_high_tag(0) == expected_ptr.with_high_tag(0) {
-                        expected_ptr = current;
+                Err(current_raw) => {
+                    if current_raw.ptr_eq(expected_raw) {
+                        expected_raw = current_raw;
                     } else {
-                        let current = Snapshot::from_raw(current, guard);
+                        let current = Snapshot::from_raw(current_raw, guard);
                         return Err(CompareExchangeError { desired, current });
                     }
                 }
@@ -248,24 +250,24 @@ impl<T: RcObject> AtomicRc<T> {
         failure: Ordering,
         guard: &'g Guard,
     ) -> Result<Rc<T>, CompareExchangeError<Rc<T>, Snapshot<'g, T>>> {
-        let mut expected_ptr = expected.ptr;
-        let desired_ptr = desired.ptr.with_timestamp();
+        let mut expected_raw = expected.ptr;
+        let desired_raw = desired.ptr.with_timestamp();
         loop {
             match self
                 .link
-                .compare_exchange_weak(expected_ptr, desired_ptr, success, failure)
+                .compare_exchange_weak(expected_raw, desired_raw, success, failure)
             {
                 Ok(_) => {
                     // Skip decrementing a strong count of the inserted pointer.
                     forget(desired);
-                    let rc = Rc::from_raw(expected_ptr);
+                    let rc = Rc::from_raw(expected_raw);
                     return Ok(rc);
                 }
-                Err(current) => {
-                    if current.with_high_tag(0) == expected_ptr.with_high_tag(0) {
-                        expected_ptr = current;
+                Err(current_raw) => {
+                    if current_raw.ptr_eq(expected_raw) {
+                        expected_raw = current_raw;
                     } else {
-                        let current = Snapshot::from_raw(current, guard);
+                        let current = Snapshot::from_raw(current_raw, guard);
                         return Err(CompareExchangeError { desired, current });
                     }
                 }
@@ -312,14 +314,14 @@ impl<T: RcObject> AtomicRc<T> {
                 .link
                 .compare_exchange(expected_raw, desired_raw, success, failure)
             {
-                Ok(current) => return Ok(Snapshot::from_raw(current, guard)),
-                Err(current) => {
-                    if current.with_high_tag(0) == expected_raw.with_high_tag(0) {
-                        expected_raw = current;
+                Ok(current_raw) => return Ok(Snapshot::from_raw(current_raw, guard)),
+                Err(current_raw) => {
+                    if current_raw.ptr_eq(expected_raw) {
+                        expected_raw = current_raw;
                     } else {
                         return Err(CompareExchangeError {
                             desired: Snapshot::from_raw(desired_raw, guard),
-                            current: Snapshot::from_raw(current, guard),
+                            current: Snapshot::from_raw(current_raw, guard),
                         });
                     }
                 }
@@ -378,6 +380,25 @@ impl<T: RcObject> From<Rc<T>> for AtomicRc<T> {
             link: Atomic::new(ptr),
             _marker: PhantomData,
         }
+    }
+}
+
+impl<T: RcObject> From<&Rc<T>> for AtomicRc<T> {
+    #[inline]
+    fn from(value: &Rc<T>) -> Self {
+        Self::from(value.clone())
+    }
+}
+
+impl<T: RcObject> Debug for AtomicRc<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.link.load(Ordering::Relaxed), f)
+    }
+}
+
+impl<T: RcObject> Pointer for AtomicRc<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.link.load(Ordering::Relaxed), f)
     }
 }
 
@@ -588,6 +609,39 @@ impl<T: RcObject> Rc<T> {
             Some(unsafe { self.deref_mut() })
         }
     }
+
+    /// Returns `true` if the two pointer values, including the tag values set by `with_tag`,
+    /// are identical.
+    #[inline]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        // Instead of using a direct equality comparison (`==`), we use `ptr_eq`, which ignores
+        // the epoch tag in the high bits. This is because the epoch tags hold no significance
+        // for clients; they are only used internally by the CIRC engine to track the last
+        // accessed epoch for the pointer.
+        self.ptr.ptr_eq(other.ptr)
+    }
+}
+
+impl<'g, T: RcObject> From<Snapshot<'g, T>> for Rc<T> {
+    fn from(value: Snapshot<'g, T>) -> Self {
+        value.counted()
+    }
+}
+
+impl<T: RcObject + Debug> Debug for Rc<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(cnt) = self.as_ref() {
+            f.debug_tuple("RcObject").field(cnt).finish()
+        } else {
+            f.write_str("Null")
+        }
+    }
+}
+
+impl<T: RcObject> Pointer for Rc<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.ptr, f)
+    }
 }
 
 impl<T: RcObject> Default for Rc<T> {
@@ -608,10 +662,30 @@ impl<T: RcObject> Drop for Rc<T> {
     }
 }
 
-impl<T: RcObject> PartialEq for Rc<T> {
+impl<T: RcObject + PartialEq> PartialEq for Rc<T> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self.ptr == other.ptr
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl<T: RcObject + Eq> Eq for Rc<T> {}
+
+impl<T: RcObject + Hash> Hash for Rc<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_ref().hash(state);
+    }
+}
+
+impl<T: RcObject + PartialOrd> PartialOrd for Rc<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.as_ref().partial_cmp(&other.as_ref())
+    }
+}
+
+impl<T: RcObject + Ord> Ord for Rc<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_ref().cmp(&other.as_ref())
     }
 }
 
@@ -775,6 +849,17 @@ impl<'g, T: RcObject> Snapshot<'g, T> {
             Some(unsafe { self.deref_mut() })
         }
     }
+
+    /// Returns `true` if the two pointer values, including the tag values set by `with_tag`,
+    /// are identical.
+    #[inline]
+    pub fn ptr_eq(self, other: Self) -> bool {
+        // Instead of using a direct equality comparison (`==`), we use `ptr_eq`, which ignores
+        // the epoch tag in the high bits. This is because the epoch tags hold no significance
+        // for clients; they are only used internally by the CIRC engine to track the last
+        // accessed epoch for the pointer.
+        self.ptr.ptr_eq(other.ptr)
+    }
 }
 
 impl<'g, T> Snapshot<'g, T> {
@@ -803,9 +888,45 @@ impl<'g, T: RcObject> Default for Snapshot<'g, T> {
     }
 }
 
-impl<'g, T> PartialEq for Snapshot<'g, T> {
+impl<'g, T: RcObject + PartialEq> PartialEq for Snapshot<'g, T> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self.ptr.eq(&other.ptr)
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl<'g, T: RcObject + Eq> Eq for Snapshot<'g, T> {}
+
+impl<'g, T: RcObject + Hash> Hash for Snapshot<'g, T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_ref().hash(state);
+    }
+}
+
+impl<'g, T: RcObject + PartialOrd> PartialOrd for Snapshot<'g, T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.as_ref().partial_cmp(&other.as_ref())
+    }
+}
+
+impl<'g, T: RcObject + Ord> Ord for Snapshot<'g, T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_ref().cmp(&other.as_ref())
+    }
+}
+
+impl<'g, T: RcObject + Debug> Debug for Snapshot<'g, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(cnt) = self.as_ref() {
+            f.debug_tuple("RcObject").field(cnt).finish()
+        } else {
+            f.write_str("Null")
+        }
+    }
+}
+
+impl<'g, T: RcObject> Pointer for Snapshot<'g, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.ptr, f)
     }
 }

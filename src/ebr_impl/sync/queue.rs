@@ -122,7 +122,7 @@ impl<T> Queue<T> {
                     .map(|_| {
                         let tail = self.tail.load(Relaxed, guard);
                         // Advance the tail so that we don't retire a pointer to a reachable node.
-                        if head == tail {
+                        if head.ptr_eq(tail) {
                             let _ = self
                                 .tail
                                 .compare_exchange(tail, next, Release, Relaxed, guard);
@@ -154,7 +154,7 @@ impl<T> Queue<T> {
                     .map(|_| {
                         let tail = self.tail.load(Relaxed, guard);
                         // Advance the tail so that we don't retire a pointer to a reachable node.
-                        if head == tail {
+                        if head.ptr_eq(tail) {
                             let _ = self
                                 .tail
                                 .compare_exchange(tail, next, Release, Relaxed, guard);

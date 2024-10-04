@@ -3,6 +3,7 @@ use core::marker::PhantomData;
 use core::mem::align_of;
 use core::ptr::null_mut;
 use core::sync::atomic::AtomicUsize;
+use std::fmt::{Debug, Formatter, Pointer};
 
 use atomic::{Atomic, Ordering};
 
@@ -10,6 +11,18 @@ use super::Guard;
 
 pub struct Tagged<T: ?Sized> {
     ptr: *mut T,
+}
+
+impl<T> Debug for Tagged<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.as_raw(), f)
+    }
+}
+
+impl<T> Pointer for Tagged<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Pointer::fmt(&self.as_raw(), f)
+    }
 }
 
 impl<T> Default for Tagged<T> {
@@ -25,14 +38,6 @@ impl<T> Clone for Tagged<T> {
 }
 
 impl<T> Copy for Tagged<T> {}
-
-impl<T> PartialEq for Tagged<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.with_high_tag(0).ptr == other.with_high_tag(0).ptr
-    }
-}
-
-impl<T> Eq for Tagged<T> {}
 
 impl<T> Hash for Tagged<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -125,6 +130,16 @@ impl<T> Tagged<T> {
             Some(self.deref())
         }
     }
+
+    /// Returns `true` if the two pointer values, including the tag values set by `with_tag`,
+    /// are identical.
+    pub fn ptr_eq(self, other: Self) -> bool {
+        // Instead of using a direct equality comparison (`==`), we use `ptr_eq`, which ignores
+        // the epoch tag in the high bits. This is because the epoch tags hold no significance
+        // for clients; they are only used internally by the CIRC engine to track the last
+        // accessed epoch for the pointer.
+        self.with_high_tag(0).ptr == other.with_high_tag(0).ptr
+    }
 }
 
 /// Returns a bitmask containing the unused least significant bits of an aligned pointer to `T`.
@@ -196,6 +211,7 @@ impl<T> RawAtomic<T> {
     }
 }
 
+// A shared pointer type only for the internal EBR implementation.
 pub(crate) struct RawShared<'g, T> {
     inner: Tagged<T>,
     _marker: PhantomData<&'g T>,
@@ -233,12 +249,6 @@ impl<'g, T> From<Tagged<T>> for RawShared<'g, T> {
             inner,
             _marker: PhantomData,
         }
-    }
-}
-
-impl<'g, T> PartialEq for RawShared<'g, T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.inner == other.inner
     }
 }
 
@@ -287,5 +297,15 @@ impl<'g, T> RawShared<'g, T> {
     #[cfg(test)]
     pub fn is_null(self) -> bool {
         self.inner.is_null()
+    }
+
+    /// Returns `true` if the two pointer values, including the tag values set by `with_tag`,
+    /// are identical.
+    pub fn ptr_eq(&self, other: Self) -> bool {
+        // Instead of using a direct equality comparison (`==`), we use `ptr_eq`, which ignores
+        // the epoch tag in the high bits. This is because the epoch tags hold no significance
+        // for clients; they are only used internally by the CIRC engine to track the last
+        // accessed epoch for the pointer.
+        self.inner.ptr_eq(other.inner)
     }
 }
